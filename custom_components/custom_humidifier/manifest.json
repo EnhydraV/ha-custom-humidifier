@@ -1,6 +1,6 @@
 {
-  "domain": "custom_hygrostat",
-  "name": "Custom Hygrostat",
+  "domain": "custom_humidifier",
+  "name": "Custom Humidifier",
   "version": "0.1.0",
   "documentation": "https://github.com/EnhydraV/ha-custom-humidifier",
   "issue_tracker": "https://github.com/EnhydraV/ha-custom-humidifier/issues",

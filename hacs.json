@@ -1,5 +1,5 @@
 {
-  "name": "Custom Hygrostat",
+  "name": "Custom Humidifier",
   "render_readme": true,
   "homeassistant": "2026.0.0"
 }
