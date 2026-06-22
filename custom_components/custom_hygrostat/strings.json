@@ -1,0 +1,53 @@
+{
+  "title": "Custom Hygrostat",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Custom Hygrostat",
+        "description": "Configurez votre déshumidificateur piloté par humidité.",
+        "data": {
+          "name": "Nom",
+          "target_sensor": "Capteur d'humidité",
+          "turn_on_action": "Actions à l'allumage",
+          "turn_off_action": "Actions à l'extinction",
+          "target_humidity": "Humidité cible",
+          "dry_tolerance": "Tolérance sèche",
+          "wet_tolerance": "Tolérance humide",
+          "min_humidity": "Humidité min (réglable)",
+          "max_humidity": "Humidité max (réglable)",
+          "min_cycle_duration": "Durée min de cycle (min)",
+          "boost_duration": "Durée de la marche forcée (min)"
+        }
+      }
+    },
+    "error": {
+      "humidity_range": "L'humidité minimale doit être inférieure à la maximale."
+    },
+    "abort": {
+      "already_configured": "Un hygrostat porte déjà ce nom."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Modifier l'hygrostat",
+        "data": {
+          "name": "Nom",
+          "target_sensor": "Capteur d'humidité",
+          "turn_on_action": "Actions à l'allumage",
+          "turn_off_action": "Actions à l'extinction",
+          "target_humidity": "Humidité cible",
+          "dry_tolerance": "Tolérance sèche",
+          "wet_tolerance": "Tolérance humide",
+          "min_humidity": "Humidité min (réglable)",
+          "max_humidity": "Humidité max (réglable)",
+          "min_cycle_duration": "Durée min de cycle (min)",
+          "boost_duration": "Durée de la marche forcée (min)"
+        }
+      }
+    },
+    "error": {
+      "humidity_range": "L'humidité minimale doit être inférieure à la maximale."
+    }
+  }
+}

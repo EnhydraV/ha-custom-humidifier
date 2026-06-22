@@ -1,0 +1,53 @@
+{
+  "title": "Custom Hygrostat",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Custom Hygrostat",
+        "description": "Configure your humidity-driven dehumidifier.",
+        "data": {
+          "name": "Name",
+          "target_sensor": "Humidity sensor",
+          "turn_on_action": "Turn-on actions",
+          "turn_off_action": "Turn-off actions",
+          "target_humidity": "Target humidity",
+          "dry_tolerance": "Dry tolerance",
+          "wet_tolerance": "Wet tolerance",
+          "min_humidity": "Min humidity (adjustable)",
+          "max_humidity": "Max humidity (adjustable)",
+          "min_cycle_duration": "Min cycle duration (min)",
+          "boost_duration": "Boost duration (min)"
+        }
+      }
+    },
+    "error": {
+      "humidity_range": "Minimum humidity must be lower than maximum."
+    },
+    "abort": {
+      "already_configured": "A hygrostat with this name already exists."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Edit hygrostat",
+        "data": {
+          "name": "Name",
+          "target_sensor": "Humidity sensor",
+          "turn_on_action": "Turn-on actions",
+          "turn_off_action": "Turn-off actions",
+          "target_humidity": "Target humidity",
+          "dry_tolerance": "Dry tolerance",
+          "wet_tolerance": "Wet tolerance",
+          "min_humidity": "Min humidity (adjustable)",
+          "max_humidity": "Max humidity (adjustable)",
+          "min_cycle_duration": "Min cycle duration (min)",
+          "boost_duration": "Boost duration (min)"
+        }
+      }
+    },
+    "error": {
+      "humidity_range": "Minimum humidity must be lower than maximum."
+    }
+  }
+}

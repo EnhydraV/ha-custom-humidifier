@@ -1,0 +1,13 @@
+{
+  "domain": "custom_hygrostat",
+  "name": "Custom Hygrostat",
+  "version": "0.1.0",
+  "documentation": "https://github.com/EnhydraV/ha-custom-humidifier",
+  "issue_tracker": "https://github.com/EnhydraV/ha-custom-humidifier/issues",
+  "dependencies": [],
+  "codeowners": ["@EnhydraV"],
+  "requirements": [],
+  "config_flow": true,
+  "integration_type": "helper",
+  "iot_class": "local_polling"
+}
