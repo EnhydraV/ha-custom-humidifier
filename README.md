@@ -5,7 +5,7 @@ Un hygrostat pour Home Assistant dérivé du `generic_hygrostat`, mais adapté �
 - **Déshumidificateur uniquement** — la logique de régulation est inversée par rapport à un humidificateur.
 - **Pas d'interrupteur** — l'allumage et l'extinction de l'appareil sont remplacés par des **séquences d'actions** (prise connectée, commande IR, notification, etc.), éditables dans l'UI.
 - **Marche forcée temporisée (boost)** — un mode `boost` force l'appareil en marche pendant une durée configurable, puis repasse en régulation normale.
-- **Condition d'activation (template)** — un template optionnel qui, tant qu'il rend `false`, coupe l'appareil et suspend la régulation (réservoir plein, fenêtre ouverte...). Vide = toujours actif.
+- **Conditions d'activation et d'erreur (templates)** — deux templates optionnels qui verrouillent l'appareil : la condition d'activation coupe quand elle rend `false`, la condition d'erreur coupe quand elle rend `true` (réservoir plein...). L'appareil ne peut tourner que si activation = `true` **et** erreur = `false`.
 - **Réglages capteur conservés** — capteur d'humidité cible, humidité cible, tolérances sèche/humide, plage min/max réglable, durée minimale de cycle.
 
 Tout se configure via l'interface (config flow + options flow). L'intégration est de type `helper` : elle apparaît dans **Paramètres → Appareils et services → Aides**.
@@ -31,7 +31,8 @@ Tout se configure via l'interface (config flow + options flow). L'intégration e
 | Humidité min / max | Bornes réglables de la consigne |
 | Durée min de cycle | Empêche les cycles marche/arrêt trop rapprochés |
 | Durée de la marche forcée | Durée du mode `boost` |
-| Condition d'activation | Template optionnel ; `false` = appareil coupé, régulation suspendue |
+| Condition d'activation | Template optionnel ; `false` = appareil coupé (vide = toujours `true`) |
+| Condition d'erreur | Template optionnel ; `true` = appareil coupé (vide = toujours `false`) |
 
 ## Fonctionnement de la régulation
 
@@ -39,20 +40,24 @@ L'appareil **démarre** quand `humidité ≥ cible + tolérance humide` et **s'a
 
 Le mode `boost` ignore la régulation, force la marche pour la durée configurée, puis revient automatiquement en mode `normal`.
 
-### Condition d'activation
+### Conditions d'activation et d'erreur
 
-Si un template est renseigné, il est réévalué à chaque changement des entités qu'il référence :
+Deux templates optionnels, réévalués à chaque changement des entités qu'ils référencent. L'appareil n'est autorisé à tourner que si **activation = `true` ET erreur = `false`** :
 
-- **`false`** → l'appareil est coupé immédiatement (actions d'extinction), un `boost` en cours est annulé, et la régulation est suspendue.
-- **`true`** (ou template vide) → régulation normale.
+| Template | Coupe l'appareil quand | Si vide |
+|---|---|---|
+| Condition d'activation | il rend `false` | considéré `true` (jamais bloquant) |
+| Condition d'erreur | il rend `true` | considéré `false` (jamais bloquant) |
 
-Exemple — couper le déshumidificateur quand le réservoir est plein, sans automatisation :
+Quand l'appareil est verrouillé : coupure immédiate (actions d'extinction), un `boost` en cours est annulé et la régulation est suspendue. Au déverrouillage, la régulation reprend normalement.
+
+Exemple — condition d'erreur pour couper quand le réservoir est plein, sans automatisation :
 
 ```jinja
-{{ is_state('binary_sensor.dryfy_cave_nw_reservoir', 'off') }}
+{{ is_state('binary_sensor.dryfy_cave_nw_reservoir', 'on') }}
 ```
 
-Attention : si le capteur passe `unavailable`, `is_state(...)` rend `false` et l'appareil est coupé (comportement volontairement fail-safe). Pour tolérer l'indisponibilité : `{{ not is_state('binary_sensor.dryfy_cave_nw_reservoir', 'on') }}`.
+Nuance : si le capteur passe `unavailable`, `is_state(..., 'on')` rend `false` → pas d'erreur, l'appareil continue. Pour couper aussi sur capteur indisponible (fail-safe) : `{{ not is_state('binary_sensor.dryfy_cave_nw_reservoir', 'off') }}`.
 
 ## Licence
 

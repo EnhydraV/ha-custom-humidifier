@@ -17,7 +17,8 @@
           "max_humidity": "Humidité max (réglable)",
           "min_cycle_duration": "Durée min de cycle (min)",
           "boost_duration": "Durée de la marche forcée (min)",
-          "enable_template": "Condition d'activation (template, vide = toujours actif)"
+          "enable_template": "Condition d'activation (template, vide = toujours actif)",
+          "error_template": "Condition d'erreur (template, true = arrêt, vide = ignorée)"
         }
       }
     },
@@ -45,7 +46,8 @@
           "max_humidity": "Humidité max (réglable)",
           "min_cycle_duration": "Durée min de cycle (min)",
           "boost_duration": "Durée de la marche forcée (min)",
-          "enable_template": "Condition d'activation (template, vide = toujours actif)"
+          "enable_template": "Condition d'activation (template, vide = toujours actif)",
+          "error_template": "Condition d'erreur (template, true = arrêt, vide = ignorée)"
         }
       }
     },

@@ -17,7 +17,8 @@
           "max_humidity": "Max humidity (adjustable)",
           "min_cycle_duration": "Min cycle duration (min)",
           "boost_duration": "Boost duration (min)",
-          "enable_template": "Enable condition (template, empty = always enabled)"
+          "enable_template": "Enable condition (template, empty = always enabled)",
+          "error_template": "Error condition (template, true = stop, empty = ignored)"
         }
       }
     },
@@ -45,7 +46,8 @@
           "max_humidity": "Max humidity (adjustable)",
           "min_cycle_duration": "Min cycle duration (min)",
           "boost_duration": "Boost duration (min)",
-          "enable_template": "Enable condition (template, empty = always enabled)"
+          "enable_template": "Enable condition (template, empty = always enabled)",
+          "error_template": "Error condition (template, true = stop, empty = ignored)"
         }
       }
     },

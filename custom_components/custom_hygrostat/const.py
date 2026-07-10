@@ -15,6 +15,7 @@ CONF_WET_TOLERANCE = "wet_tolerance"
 CONF_MIN_CYCLE_DURATION = "min_cycle_duration"
 CONF_BOOST_DURATION = "boost_duration"
 CONF_ENABLE_TEMPLATE = "enable_template"
+CONF_ERROR_TEMPLATE = "error_template"
 
 DEFAULT_NAME = "Custom Hygrostat"
 DEFAULT_TOLERANCE = 3

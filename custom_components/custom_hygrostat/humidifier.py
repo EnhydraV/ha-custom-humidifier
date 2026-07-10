@@ -42,6 +42,7 @@ from .const import (
     CONF_MIN_CYCLE_DURATION,
     CONF_BOOST_DURATION,
     CONF_ENABLE_TEMPLATE,
+    CONF_ERROR_TEMPLATE,
     DEFAULT_TOLERANCE,
     DEFAULT_MIN_HUMIDITY,
     DEFAULT_MAX_HUMIDITY,
@@ -67,10 +68,13 @@ async def async_setup_entry(
     action_on = Script(hass, cfg[CONF_ACTION_ON], name, DOMAIN)
     action_off = Script(hass, cfg[CONF_ACTION_OFF], name, DOMAIN)
 
-    # Template vide ou absent = hygrostat toujours autorisé
+    # Templates vides ou absents = hygrostat toujours autorisé
     enable_template = None
     if tpl := cfg.get(CONF_ENABLE_TEMPLATE):
         enable_template = Template(tpl, hass)
+    error_template = None
+    if tpl := cfg.get(CONF_ERROR_TEMPLATE):
+        error_template = Template(tpl, hass)
 
     async_add_entities(
         [
@@ -88,6 +92,7 @@ async def async_setup_entry(
                 min_cycle_minutes=cfg.get(CONF_MIN_CYCLE_DURATION, DEFAULT_MIN_CYCLE_MINUTES),
                 boost_minutes=cfg.get(CONF_BOOST_DURATION, DEFAULT_BOOST_MINUTES),
                 enable_template=enable_template,
+                error_template=error_template,
             )
         ]
     )
@@ -119,6 +124,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         min_cycle_minutes,
         boost_minutes,
         enable_template,
+        error_template,
     ):
         self._attr_unique_id = unique_id
         self._attr_name = name
@@ -142,7 +148,9 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         self._boost_remove = None
         self._last_switched = None
         self._enable_template = enable_template
-        self._enabled = True
+        self._error_template = error_template
+        self._enable_ok = True
+        self._error = False
 
     async def async_added_to_hass(self):
         await super().async_added_to_hass()
@@ -153,11 +161,14 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             )
         )
 
-        if self._enable_template is not None:
+        track_templates = [
+            TrackTemplate(tpl, None)
+            for tpl in (self._enable_template, self._error_template)
+            if tpl is not None
+        ]
+        if track_templates:
             tpl_info = async_track_template_result(
-                self.hass,
-                [TrackTemplate(self._enable_template, None)],
-                self._async_enable_template_changed,
+                self.hass, track_templates, self._async_templates_changed
             )
             self.async_on_remove(tpl_info.async_remove)
             tpl_info.async_refresh()
@@ -200,6 +211,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             "current_humidity": self._cur_humidity,
             "boost_active": self._attr_mode == self.MODE_BOOST,
             "enabled": self._enabled,
+            "error_active": self._error,
         }
 
     async def async_turn_on(self, **kwargs):
@@ -230,20 +242,29 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             await self._async_control(force=True)
         self.async_write_ha_state()
 
-    # ----- Condition d'activation (template) -----
+    # ----- Conditions d'activation et d'erreur (templates) -----
+
+    @property
+    def _enabled(self):
+        # Autorisé uniquement si activation true ET erreur false
+        return self._enable_ok and not self._error
 
     @callback
-    def _async_enable_template_changed(self, event, updates):
-        result = updates.pop().result
-        if isinstance(result, TemplateError):
-            # En erreur, on conserve le dernier état connu
-            _LOGGER.warning("Template d'activation en erreur : %s", result)
+    def _async_templates_changed(self, event, updates):
+        was_enabled = self._enabled
+        for update in updates:
+            result = update.result
+            if isinstance(result, TemplateError):
+                # En erreur de rendu, on conserve le dernier état connu
+                _LOGGER.warning("Template en erreur : %s", result)
+                continue
+            if update.template is self._enable_template:
+                self._enable_ok = result_as_boolean(result)
+            elif update.template is self._error_template:
+                self._error = result_as_boolean(result)
+        if self._enabled == was_enabled:
             return
-        enabled = result_as_boolean(result)
-        if enabled == self._enabled:
-            return
-        self._enabled = enabled
-        if enabled:
+        if self._enabled:
             self.hass.async_create_task(self._async_resume())
         else:
             self.hass.async_create_task(self._async_interlock_off())
@@ -263,7 +284,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
 
     async def _async_start_boost(self):
         if not self._enabled:
-            _LOGGER.warning("Boost refusé : condition d'activation false")
+            _LOGGER.warning("Boost refusé : hygrostat verrouillé (activation ou erreur)")
             return
         if not self._state:
             self._state = True

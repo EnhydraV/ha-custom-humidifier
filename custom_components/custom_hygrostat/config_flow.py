@@ -28,6 +28,7 @@ from .const import (
     CONF_MIN_CYCLE_DURATION,
     CONF_BOOST_DURATION,
     CONF_ENABLE_TEMPLATE,
+    CONF_ERROR_TEMPLATE,
     DEFAULT_NAME,
     DEFAULT_TOLERANCE,
     DEFAULT_MIN_HUMIDITY,
@@ -127,6 +128,10 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                 CONF_ENABLE_TEMPLATE,
                 default=defaults.get(CONF_ENABLE_TEMPLATE, ""),
             ): selector.TemplateSelector(),
+            vol.Optional(
+                CONF_ERROR_TEMPLATE,
+                default=defaults.get(CONF_ERROR_TEMPLATE, ""),
+            ): selector.TemplateSelector(),
         }
     )
 
@@ -136,11 +141,12 @@ def _validate(hass: HomeAssistant, user_input: dict[str, Any]) -> dict[str, str]
     errors: dict[str, str] = {}
     if user_input[CONF_MIN_HUMIDITY] >= user_input[CONF_MAX_HUMIDITY]:
         errors["base"] = "humidity_range"
-    if tpl := user_input.get(CONF_ENABLE_TEMPLATE):
-        try:
-            Template(tpl, hass).ensure_valid()
-        except TemplateError:
-            errors[CONF_ENABLE_TEMPLATE] = "invalid_template"
+    for conf in (CONF_ENABLE_TEMPLATE, CONF_ERROR_TEMPLATE):
+        if tpl := user_input.get(conf):
+            try:
+                Template(tpl, hass).ensure_valid()
+            except TemplateError:
+                errors[conf] = "invalid_template"
     return errors
 
 
