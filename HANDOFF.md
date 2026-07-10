@@ -62,15 +62,22 @@ custom_components/custom_hygrostat/
   `force=True` (turn_on/off manuel, changement de consigne, fin de boost, démarrage).
 - **Conditions d'activation et d'erreur (ajoutées le 2026-07-10)** : deux champs
   optionnels `enable_template` (bloque si `false`, vide = `true`) et
-  `error_template` (bloque si `true`, vide = `false`). Autorisation combinée :
+  `error_template` (bloque si `true`, vide = `false`). Autorisation de RÉGULATION :
   `_enabled` (property) = `_enable_ok and not _error`. Suivi réactif des deux via
   un seul `async_track_template_result` ; le callback dispatch par identité
-  d'objet Template (`update.template is self._enable_template`). Quand `_enabled`
-  passe à `false` : boost annulé, appareil coupé (`_async_interlock_off`, ignore
-  min_cycle — c'est un verrouillage), régulation suspendue (`_async_control`
-  retourne tôt) et boost refusé. Retour à `true` : `_async_control(force=True)`.
-  Template en erreur de rendu : warning + on garde le dernier état connu.
-  Attributs exposés : `enabled` (combiné), `error_active`.
+  d'objet Template (`update.template is self._enable_template`).
+  **Hiérarchie vs boost (précisée le 2026-07-10)** : l'ERREUR coupe tout
+  (`_async_interlock_off` : timer annulé, mode normal, appareil off) et le boost
+  est refusé tant qu'elle est active (`if self._error` dans start/engage_boost et
+  la détection manuelle). L'ACTIVATION `false` ne suspend que la régulation
+  normale (`_async_suspend` : appareil off, boost intact) — le boost l'ignore et
+  peut démarrer/continuer pendant. Sortie de boost (`_async_leave_boost`, partagé
+  par end_boost et set_mode normal) : si `_enabled` false → appareil coupé
+  explicitement (sinon il resterait en marche, la régulation étant suspendue),
+  sinon `_async_control(force=True)`. Retour de `_enabled` à `true` hors boost :
+  `_async_resume`. Template en erreur de rendu : warning + dernier état connu.
+  Attributs exposés : `enabled` (autorisation de régulation), `error_active`.
+  Icône : le boost passe avant l'état « activation false ».
   Cas d'usage d'origine : remplacer l'automatisation « Cave NW » — condition
   d'erreur `{{ is_state('binary_sensor.dryfy_cave_nw_reservoir', 'on') }}`
   (réservoir plein → arrêt).
@@ -84,10 +91,18 @@ custom_components/custom_hygrostat/
   Piège traité dans le config flow : champ vidé → `setdefault(None)` avant
   sauvegarde, sinon la fusion `{**data, **options}` ressuscite l'ancienne valeur
   (champ déclaré avec `suggested_value`, pas de `default`).
-- Boost : `async_set_mode("boost")` force la marche via `_async_device_turn_on()`,
-  arme un `async_call_later` de `boost_duration` minutes ; à échéance, retour en
-  `normal` + `_async_control(force=True)`. `_async_control` retourne immédiatement
-  tant que le mode est `boost`. Éteindre l'entité annule le boost.
+- **Boost (remanié le 2026-07-10)** : le minuteur interne (`boost_duration` +
+  `async_call_later`) a été SUPPRIMÉ au profit d'une entité `timer` optionnelle
+  (`boost_timer`). Avec timer : `async_set_mode("boost")` appelle `timer.start`,
+  et c'est le suivi d'état du timer (`_async_boost_timer_changed`) qui engage
+  (`active` → `_async_engage_boost`) ou termine (autre état → `_async_end_boost`)
+  le boost — le timer fait foi, y compris démarré/annulé de l'extérieur. Retour
+  en `normal`, extinction de l'entité ou verrouillage template →
+  `_async_cancel_boost_timer` (timer.cancel). Au démarrage, l'état du timer
+  restauré par HA prime sur le mode restauré (un boost survit donc au restart).
+  Sans timer : marche forcée SANS limite de durée, jusqu'au retour manuel en
+  `normal` (mode boost restauré → ré-engagé). `_async_control` retourne
+  immédiatement tant que le mode est `boost`.
 - Restauration après redémarrage (`RestoreEntity`) : état on/off, consigne
   (attribut `humidity`), mode. Au démarrage de HA, lecture du capteur puis
   `_async_control(force=True)`.
@@ -100,6 +115,17 @@ custom_components/custom_hygrostat/
   Attention : une icône personnalisée posée par l'utilisateur dans l'UI fige
   l'icône et masque la dynamique. Pas de logo d'intégration (page Intégrations) :
   il faudrait une PR sur `home-assistant/brands` (`custom_integrations/custom_hygrostat/`).
+- **Entité d'état de l'appareil (ajoutée le 2026-07-10)** : champ optionnel
+  `device_state_entity` (binary_sensor/switch/input_boolean/humidifier/fan).
+  Détection de la marche manuelle : état réel `on` alors que `_active` est False
+  → `_async_handle_manual_switch(True)` → resync `_active`/`_last_switched` puis
+  boost (timer démarré) ; si verrouillé, actions d'extinction exécutées à la
+  place. État réel `off` alors que `_active` True → resync + annulation
+  timer/boost, la régulation reprendra au prochain événement capteur. Au
+  démarrage HA : resync silencieuse de `_active` (pas de boost). ANTI-COURSE :
+  `_async_device_turn_on/off` mettent à jour `_active` AVANT d'exécuter les
+  actions, pour que l'événement d'état résultant de nos propres actions soit
+  ignoré (`is_on == self._active` dans le callback).
 - Distinction importante : `_state` = l'hygrostat (l'entité) est actif ;
   `_active` = l'appareil physique tourne. L'entité peut être "on" avec l'appareil
   arrêté (humidité sous la cible).
@@ -131,10 +157,8 @@ custom_components/custom_hygrostat/
    dans `__init__` levait `AttributeError ... no setter` à l'ouverture des
    options. Fix : `__init__` supprimé, `CustomHygrostatOptionsFlow()` sans
    argument, `self.config_entry` utilisé tel quel. Détecté au premier test réel.
-3. `_async_device_turn_on(bypass_cycle=True)` : le paramètre `bypass_cycle` n'est
-   **jamais utilisé** dans le corps de la méthode. Inoffensif (le check min_cycle est
-   dans `_async_control`, que le boost ne traverse pas), mais c'est du code mort qui
-   sème le doute — soit l'implémenter, soit le retirer.
+3. ~~`_async_device_turn_on(bypass_cycle=True)` : paramètre jamais utilisé~~
+   **RETIRÉ le 2026-07-10** lors du remaniement du boost.
 4. Fin de boost : `_async_end_boost` repasse par `_async_control(force=True)`, donc
    ignore `min_cycle_duration`. Voulu ? À confirmer, sinon un boost court suivi d'un
    arrêt immédiat peut faire claquer l'appareil deux fois coup sur coup.

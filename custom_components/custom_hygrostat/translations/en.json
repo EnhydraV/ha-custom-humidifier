@@ -16,10 +16,11 @@
           "min_humidity": "Min humidity (adjustable)",
           "max_humidity": "Max humidity (adjustable)",
           "min_cycle_duration": "Min cycle duration (min)",
-          "boost_duration": "Boost duration (min)",
           "enable_template": "Enable condition (template, empty = always enabled)",
           "error_template": "Error condition (template, true = stop, empty = ignored)",
-          "target_entity": "Setpoint entity (optional, drives the target humidity)"
+          "target_entity": "Setpoint entity (optional, drives the target humidity)",
+          "boost_timer": "Boost timer (timer entity, active = boost)",
+          "device_state_entity": "Device state entity (optional, detects manual operation)"
         }
       }
     },
@@ -46,10 +47,11 @@
           "min_humidity": "Min humidity (adjustable)",
           "max_humidity": "Max humidity (adjustable)",
           "min_cycle_duration": "Min cycle duration (min)",
-          "boost_duration": "Boost duration (min)",
           "enable_template": "Enable condition (template, empty = always enabled)",
           "error_template": "Error condition (template, true = stop, empty = ignored)",
-          "target_entity": "Setpoint entity (optional, drives the target humidity)"
+          "target_entity": "Setpoint entity (optional, drives the target humidity)",
+          "boost_timer": "Boost timer (timer entity, active = boost)",
+          "device_state_entity": "Device state entity (optional, detects manual operation)"
         }
       }
     },

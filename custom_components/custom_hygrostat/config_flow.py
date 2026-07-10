@@ -27,7 +27,8 @@ from .const import (
     CONF_DRY_TOLERANCE,
     CONF_WET_TOLERANCE,
     CONF_MIN_CYCLE_DURATION,
-    CONF_BOOST_DURATION,
+    CONF_BOOST_TIMER,
+    CONF_DEVICE_ENTITY,
     CONF_ENABLE_TEMPLATE,
     CONF_ERROR_TEMPLATE,
     DEFAULT_NAME,
@@ -35,7 +36,6 @@ from .const import (
     DEFAULT_MIN_HUMIDITY,
     DEFAULT_MAX_HUMIDITY,
     DEFAULT_TARGET_HUMIDITY,
-    DEFAULT_BOOST_MINUTES,
     DEFAULT_MIN_CYCLE_MINUTES,
 )
 
@@ -125,12 +125,17 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                 )
             ),
             vol.Optional(
-                CONF_BOOST_DURATION,
-                default=defaults.get(CONF_BOOST_DURATION, DEFAULT_BOOST_MINUTES),
-            ): selector.NumberSelector(
-                selector.NumberSelectorConfig(
-                    min=1, max=240, step=1, unit_of_measurement="min",
-                    mode=selector.NumberSelectorMode.BOX,
+                CONF_BOOST_TIMER,
+                description={"suggested_value": defaults.get(CONF_BOOST_TIMER)},
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="timer")
+            ),
+            vol.Optional(
+                CONF_DEVICE_ENTITY,
+                description={"suggested_value": defaults.get(CONF_DEVICE_ENTITY)},
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(
+                    domain=["binary_sensor", "switch", "input_boolean", "humidifier", "fan"]
                 )
             ),
             vol.Optional(
@@ -175,7 +180,8 @@ class CustomHygrostatConfigFlow(ConfigFlow, domain=DOMAIN):
             if not errors:
                 # Champ vidé = None explicite, sinon la fusion data/options
                 # ressusciterait l'ancienne valeur
-                user_input.setdefault(CONF_TARGET_ENTITY, None)
+                for conf in (CONF_TARGET_ENTITY, CONF_BOOST_TIMER, CONF_DEVICE_ENTITY):
+                    user_input.setdefault(conf, None)
                 await self.async_set_unique_id(
                     f"{DOMAIN}_{user_input[CONF_NAME].lower().replace(' ', '_')}"
                 )
@@ -208,7 +214,8 @@ class CustomHygrostatOptionsFlow(OptionsFlow):
         if user_input is not None:
             errors = _validate(self.hass, user_input)
             if not errors:
-                user_input.setdefault(CONF_TARGET_ENTITY, None)
+                for conf in (CONF_TARGET_ENTITY, CONF_BOOST_TIMER, CONF_DEVICE_ENTITY):
+                    user_input.setdefault(conf, None)
                 return self.async_create_entry(title="", data=user_input)
 
         current = {**self.config_entry.data, **self.config_entry.options}

@@ -20,7 +20,6 @@ from homeassistant.exceptions import TemplateError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import (
     TrackTemplate,
-    async_call_later,
     async_track_state_change_event,
     async_track_template_result,
 )
@@ -41,14 +40,14 @@ from .const import (
     CONF_DRY_TOLERANCE,
     CONF_WET_TOLERANCE,
     CONF_MIN_CYCLE_DURATION,
-    CONF_BOOST_DURATION,
+    CONF_BOOST_TIMER,
+    CONF_DEVICE_ENTITY,
     CONF_ENABLE_TEMPLATE,
     CONF_ERROR_TEMPLATE,
     DEFAULT_TOLERANCE,
     DEFAULT_MIN_HUMIDITY,
     DEFAULT_MAX_HUMIDITY,
     DEFAULT_TARGET_HUMIDITY,
-    DEFAULT_BOOST_MINUTES,
     DEFAULT_MIN_CYCLE_MINUTES,
 )
 
@@ -92,7 +91,8 @@ async def async_setup_entry(
                 dry_tolerance=cfg.get(CONF_DRY_TOLERANCE, DEFAULT_TOLERANCE),
                 wet_tolerance=cfg.get(CONF_WET_TOLERANCE, DEFAULT_TOLERANCE),
                 min_cycle_minutes=cfg.get(CONF_MIN_CYCLE_DURATION, DEFAULT_MIN_CYCLE_MINUTES),
-                boost_minutes=cfg.get(CONF_BOOST_DURATION, DEFAULT_BOOST_MINUTES),
+                boost_timer_entity_id=cfg.get(CONF_BOOST_TIMER),
+                device_entity_id=cfg.get(CONF_DEVICE_ENTITY),
                 enable_template=enable_template,
                 error_template=error_template,
             )
@@ -125,7 +125,8 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         dry_tolerance,
         wet_tolerance,
         min_cycle_minutes,
-        boost_minutes,
+        boost_timer_entity_id,
+        device_entity_id,
         enable_template,
         error_template,
     ):
@@ -141,7 +142,8 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         self._dry_tolerance = dry_tolerance
         self._wet_tolerance = wet_tolerance
         self._min_cycle_duration = timedelta(minutes=min_cycle_minutes)
-        self._boost_duration = timedelta(minutes=boost_minutes)
+        self._boost_timer_entity_id = boost_timer_entity_id
+        self._device_entity_id = device_entity_id
 
         self._attr_available_modes = [self.MODE_NORMAL, self.MODE_BOOST]
         self._attr_mode = self.MODE_NORMAL
@@ -149,7 +151,6 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         self._state = False
         self._active = False
         self._cur_humidity = None
-        self._boost_remove = None
         self._last_switched = None
         self._enable_template = enable_template
         self._error_template = error_template
@@ -169,6 +170,24 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             self.async_on_remove(
                 async_track_state_change_event(
                     self.hass, [self._target_entity_id], self._async_target_changed
+                )
+            )
+
+        if self._boost_timer_entity_id:
+            self.async_on_remove(
+                async_track_state_change_event(
+                    self.hass,
+                    [self._boost_timer_entity_id],
+                    self._async_boost_timer_changed,
+                )
+            )
+
+        if self._device_entity_id:
+            self.async_on_remove(
+                async_track_state_change_event(
+                    self.hass,
+                    [self._device_entity_id],
+                    self._async_device_state_changed,
                 )
             )
 
@@ -210,6 +229,21 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
                     STATE_UNKNOWN,
                 ):
                     self._update_target(target_state.state)
+            if self._device_entity_id:
+                # Resynchronise la croyance sur l'état réel de l'appareil
+                device_state = self.hass.states.get(self._device_entity_id)
+                if device_state and device_state.state in ("on", "off"):
+                    self._active = device_state.state == "on"
+            if self._boost_timer_entity_id:
+                # Le timer restauré par HA fait foi, pas le mode restauré
+                timer_state = self.hass.states.get(self._boost_timer_entity_id)
+                if timer_state and timer_state.state == "active":
+                    self.hass.async_create_task(self._async_engage_boost())
+                elif self._attr_mode == self.MODE_BOOST:
+                    self._attr_mode = self.MODE_NORMAL
+            elif self._attr_mode == self.MODE_BOOST:
+                # Marche forcée manuelle (sans timer) restaurée
+                self.hass.async_create_task(self._async_engage_boost())
             self.hass.async_create_task(self._async_control(force=True))
             self.async_write_ha_state()
 
@@ -228,10 +262,11 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             return "mdi:air-humidifier-off"
         if self._error:
             return "mdi:water-alert"
-        if not self._enable_ok:
-            return "mdi:water-off"
+        # Le boost passe avant l'activation, qu'il ignore
         if self._attr_mode == self.MODE_BOOST:
             return "mdi:rocket-launch"
+        if not self._enable_ok:
+            return "mdi:water-off"
         if self._active:
             return "mdi:air-humidifier"
         # Régulation en veille : appareil arrêté, humidité sous le seuil
@@ -257,7 +292,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs):
-        self._cancel_boost()
+        await self._async_cancel_boost_timer()
         self._attr_mode = self.MODE_NORMAL
         self._state = False
         await self._async_device_turn_off()
@@ -291,9 +326,8 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         if mode == self.MODE_BOOST:
             await self._async_start_boost()
         else:
-            self._cancel_boost()
-            self._attr_mode = self.MODE_NORMAL
-            await self._async_control(force=True)
+            await self._async_cancel_boost_timer()
+            await self._async_leave_boost()
         self.async_write_ha_state()
 
     # ----- Conditions d'activation et d'erreur (templates) -----
@@ -305,6 +339,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
 
     @callback
     def _async_templates_changed(self, event, updates):
+        was_error = self._error
         was_enabled = self._enabled
         for update in updates:
             result = update.result
@@ -316,57 +351,137 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
                 self._enable_ok = result_as_boolean(result)
             elif update.template is self._error_template:
                 self._error = result_as_boolean(result)
+        if self._error and not was_error:
+            # Une erreur coupe tout, boost compris
+            self.hass.async_create_task(self._async_interlock_off())
+            return
         if self._enabled == was_enabled:
-            # L'autorisation combinée n'a pas bougé, mais l'icône
+            # L'autorisation n'a pas bougé, mais l'icône
             # ou les attributs peuvent avoir changé
+            self.async_write_ha_state()
+            return
+        if self._attr_mode == self.MODE_BOOST:
+            # Le boost ignore la condition d'activation
             self.async_write_ha_state()
             return
         if self._enabled:
             self.hass.async_create_task(self._async_resume())
         else:
-            self.hass.async_create_task(self._async_interlock_off())
+            self.hass.async_create_task(self._async_suspend())
 
     async def _async_resume(self):
         await self._async_control(force=True)
         self.async_write_ha_state()
 
+    async def _async_suspend(self):
+        # Activation false en mode normal : appareil coupé, régulation suspendue
+        await self._async_device_turn_off()
+        self.async_write_ha_state()
+
     async def _async_interlock_off(self):
-        # Coupure prioritaire : annule aussi un boost en cours
-        self._cancel_boost()
+        # Coupure prioritaire (erreur) : annule aussi un boost en cours
+        await self._async_cancel_boost_timer()
         self._attr_mode = self.MODE_NORMAL
         await self._async_device_turn_off()
         self.async_write_ha_state()
 
-    # ----- Boost (marche forcée temporisée) -----
+    # ----- Boost (marche forcée) -----
 
     async def _async_start_boost(self):
-        if not self._enabled:
-            _LOGGER.warning("Boost refusé : hygrostat verrouillé (activation ou erreur)")
+        if self._error:
+            _LOGGER.warning("Boost refusé : condition d'erreur active")
+            return
+        if self._boost_timer_entity_id:
+            # Le passage en boost suivra le changement d'état du timer
+            await self.hass.services.async_call(
+                "timer",
+                "start",
+                {"entity_id": self._boost_timer_entity_id},
+                blocking=True,
+                context=self._context,
+            )
+            return
+        # Sans timer : marche forcée jusqu'au retour manuel en mode normal
+        await self._async_engage_boost()
+
+    async def _async_engage_boost(self):
+        if self._error:
+            _LOGGER.warning("Boost refusé : condition d'erreur active")
             return
         if not self._state:
             self._state = True
-        self._cancel_boost()
         self._attr_mode = self.MODE_BOOST
-        await self._async_device_turn_on(bypass_cycle=True)
-
-        @callback
-        def _boost_finished(_now):
-            self._boost_remove = None
-            self.hass.async_create_task(self._async_end_boost())
-
-        self._boost_remove = async_call_later(
-            self.hass, self._boost_duration.total_seconds(), _boost_finished
-        )
-
-    async def _async_end_boost(self):
-        self._attr_mode = self.MODE_NORMAL
-        await self._async_control(force=True)
+        await self._async_device_turn_on()
         self.async_write_ha_state()
 
-    def _cancel_boost(self):
-        if self._boost_remove is not None:
-            self._boost_remove()
-            self._boost_remove = None
+    async def _async_end_boost(self):
+        if self._attr_mode != self.MODE_BOOST:
+            return
+        await self._async_leave_boost()
+        self.async_write_ha_state()
+
+    async def _async_leave_boost(self):
+        self._attr_mode = self.MODE_NORMAL
+        if not self._enabled:
+            # Régulation suspendue : l'appareil ne doit pas rester en marche
+            await self._async_device_turn_off()
+        else:
+            await self._async_control(force=True)
+
+    async def _async_cancel_boost_timer(self):
+        if self._boost_timer_entity_id:
+            await self.hass.services.async_call(
+                "timer",
+                "cancel",
+                {"entity_id": self._boost_timer_entity_id},
+                blocking=True,
+                context=self._context,
+            )
+
+    @callback
+    def _async_boost_timer_changed(self, event):
+        new_state = event.data.get("new_state")
+        if new_state is None:
+            return
+        if new_state.state == "active":
+            self.hass.async_create_task(self._async_engage_boost())
+        else:
+            self.hass.async_create_task(self._async_end_boost())
+
+    # ----- Entité d'état de l'appareil (détection manuelle) -----
+
+    @callback
+    def _async_device_state_changed(self, event):
+        new_state = event.data.get("new_state")
+        if new_state is None or new_state.state not in ("on", "off"):
+            return
+        is_on = new_state.state == "on"
+        if is_on == self._active:
+            # Conséquence de nos propres actions : rien à faire
+            return
+        self.hass.async_create_task(self._async_handle_manual_switch(is_on))
+
+    async def _async_handle_manual_switch(self, is_on):
+        # L'appareil a changé d'état sans qu'on l'ait commandé
+        self._active = is_on
+        self._last_switched = dt_util.utcnow()
+        if is_on:
+            if self._error:
+                # Erreur active (réservoir plein...) : on refuse la marche
+                _LOGGER.warning("Allumage manuel refusé : condition d'erreur active")
+                await self._async_device_turn_off()
+                self.async_write_ha_state()
+                return
+            _LOGGER.info("Allumage manuel détecté : passage en boost")
+            if not self._state:
+                self._state = True
+            await self._async_start_boost()
+        else:
+            # Extinction manuelle : sortie du boost, la régulation reprendra
+            # la main au prochain changement d'humidité (min_cycle respecté)
+            await self._async_cancel_boost_timer()
+            self._attr_mode = self.MODE_NORMAL
+        self.async_write_ha_state()
 
     # ----- Entité de consigne -----
 
@@ -434,16 +549,18 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             if too_humid:
                 await self._async_device_turn_on()
 
-    async def _async_device_turn_on(self, bypass_cycle=False):
+    async def _async_device_turn_on(self):
         if self._active:
             return
-        await self._action_on.async_run(context=self._context)
+        # Croyance mise à jour AVANT l'action : l'événement de l'entité d'état
+        # déclenché par nos propres actions ne doit pas passer pour manuel
         self._active = True
         self._last_switched = dt_util.utcnow()
+        await self._action_on.async_run(context=self._context)
 
     async def _async_device_turn_off(self):
         if not self._active:
             return
-        await self._action_off.async_run(context=self._context)
         self._active = False
         self._last_switched = dt_util.utcnow()
+        await self._action_off.async_run(context=self._context)
