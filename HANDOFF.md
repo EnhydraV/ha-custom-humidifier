@@ -58,6 +58,17 @@ custom_components/custom_hygrostat/
   - entre les deux : conserve l'état.
 - `min_cycle_duration` : anti court-cyclage, vérifié dans `_async_control()` sauf si
   `force=True` (turn_on/off manuel, changement de consigne, fin de boost, démarrage).
+- **Condition d'activation (ajoutée le 2026-07-10)** : champ optionnel
+  `enable_template` (TemplateSelector). Suivi réactif via
+  `async_track_template_result` + `TrackTemplate`. Quand le rendu passe à `false`
+  (`result_as_boolean`) : boost annulé, appareil coupé (`_async_interlock_off`,
+  ignore min_cycle — c'est un verrouillage), régulation suspendue
+  (`_async_control` retourne tôt) et boost refusé. Retour à `true` :
+  `_async_control(force=True)`. Template en erreur : warning + on garde le
+  dernier état connu. Vide/absent : toujours `true`. Attribut exposé : `enabled`.
+  Cas d'usage d'origine : remplacer l'automatisation « Cave NW » qui coupait
+  l'entité quand `binary_sensor.dryfy_cave_nw_reservoir` (réservoir plein)
+  était `on` → template `{{ is_state('binary_sensor.dryfy_cave_nw_reservoir', 'off') }}`.
 - Boost : `async_set_mode("boost")` force la marche via `_async_device_turn_on()`,
   arme un `async_call_later` de `boost_duration` minutes ; à échéance, retour en
   `normal` + `_async_control(force=True)`. `_async_control` retourne immédiatement
@@ -75,7 +86,8 @@ custom_components/custom_hygrostat/
 
 - Un seul step, schéma commun config/options (`_schema(defaults)`).
 - Capteur filtré sur `sensor` + device class `humidity`.
-- Validation : `min_humidity < max_humidity`, sinon erreur `humidity_range`.
+- Validation (factorisée dans `_validate()`) : `min_humidity < max_humidity`
+  (`humidity_range`) et syntaxe du template d'activation (`invalid_template`).
 - `unique_id` dérivé du nom slugifié → deux hygrostats ne peuvent pas porter le
   même nom (`already_configured`).
 - Options flow : mêmes champs, pré-remplis avec `{**entry.data, **entry.options}` ;

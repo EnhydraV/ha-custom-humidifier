@@ -16,12 +16,14 @@
           "min_humidity": "Humidité min (réglable)",
           "max_humidity": "Humidité max (réglable)",
           "min_cycle_duration": "Durée min de cycle (min)",
-          "boost_duration": "Durée de la marche forcée (min)"
+          "boost_duration": "Durée de la marche forcée (min)",
+          "enable_template": "Condition d'activation (template, vide = toujours actif)"
         }
       }
     },
     "error": {
-      "humidity_range": "L'humidité minimale doit être inférieure à la maximale."
+      "humidity_range": "L'humidité minimale doit être inférieure à la maximale.",
+      "invalid_template": "Template invalide."
     },
     "abort": {
       "already_configured": "Un hygrostat porte déjà ce nom."
@@ -42,12 +44,14 @@
           "min_humidity": "Humidité min (réglable)",
           "max_humidity": "Humidité max (réglable)",
           "min_cycle_duration": "Durée min de cycle (min)",
-          "boost_duration": "Durée de la marche forcée (min)"
+          "boost_duration": "Durée de la marche forcée (min)",
+          "enable_template": "Condition d'activation (template, vide = toujours actif)"
         }
       }
     },
     "error": {
-      "humidity_range": "L'humidité minimale doit être inférieure à la maximale."
+      "humidity_range": "L'humidité minimale doit être inférieure à la maximale.",
+      "invalid_template": "Template invalide."
     }
   }
 }

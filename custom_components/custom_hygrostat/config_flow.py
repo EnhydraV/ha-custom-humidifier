@@ -10,8 +10,10 @@ from homeassistant.config_entries import (
     ConfigFlow,
     OptionsFlow,
 )
-from homeassistant.core import callback
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import TemplateError
 from homeassistant.helpers import selector
+from homeassistant.helpers.template import Template
 
 from .const import (
     DOMAIN,
@@ -25,6 +27,7 @@ from .const import (
     CONF_WET_TOLERANCE,
     CONF_MIN_CYCLE_DURATION,
     CONF_BOOST_DURATION,
+    CONF_ENABLE_TEMPLATE,
     DEFAULT_NAME,
     DEFAULT_TOLERANCE,
     DEFAULT_MIN_HUMIDITY,
@@ -120,8 +123,25 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                     mode=selector.NumberSelectorMode.BOX,
                 )
             ),
+            vol.Optional(
+                CONF_ENABLE_TEMPLATE,
+                default=defaults.get(CONF_ENABLE_TEMPLATE, ""),
+            ): selector.TemplateSelector(),
         }
     )
+
+
+def _validate(hass: HomeAssistant, user_input: dict[str, Any]) -> dict[str, str]:
+    """Validate user input shared by config and options flows."""
+    errors: dict[str, str] = {}
+    if user_input[CONF_MIN_HUMIDITY] >= user_input[CONF_MAX_HUMIDITY]:
+        errors["base"] = "humidity_range"
+    if tpl := user_input.get(CONF_ENABLE_TEMPLATE):
+        try:
+            Template(tpl, hass).ensure_valid()
+        except TemplateError:
+            errors[CONF_ENABLE_TEMPLATE] = "invalid_template"
+    return errors
 
 
 class CustomHygrostatConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -136,9 +156,8 @@ class CustomHygrostatConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            if user_input[CONF_MIN_HUMIDITY] >= user_input[CONF_MAX_HUMIDITY]:
-                errors["base"] = "humidity_range"
-            else:
+            errors = _validate(self.hass, user_input)
+            if not errors:
                 await self.async_set_unique_id(
                     f"{DOMAIN}_{user_input[CONF_NAME].lower().replace(' ', '_')}"
                 )
@@ -171,9 +190,8 @@ class CustomHygrostatOptionsFlow(OptionsFlow):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            if user_input[CONF_MIN_HUMIDITY] >= user_input[CONF_MAX_HUMIDITY]:
-                errors["base"] = "humidity_range"
-            else:
+            errors = _validate(self.hass, user_input)
+            if not errors:
                 return self.async_create_entry(title="", data=user_input)
 
         current = {**self.config_entry.data, **self.config_entry.options}

@@ -16,13 +16,17 @@ from homeassistant.const import (
     STATE_UNKNOWN,
 )
 from homeassistant.core import CoreState, HomeAssistant, callback
+from homeassistant.exceptions import TemplateError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import (
+    TrackTemplate,
     async_call_later,
     async_track_state_change_event,
+    async_track_template_result,
 )
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.script import Script
+from homeassistant.helpers.template import Template, result_as_boolean
 from homeassistant.util import dt as dt_util
 
 from .const import (
@@ -37,6 +41,7 @@ from .const import (
     CONF_WET_TOLERANCE,
     CONF_MIN_CYCLE_DURATION,
     CONF_BOOST_DURATION,
+    CONF_ENABLE_TEMPLATE,
     DEFAULT_TOLERANCE,
     DEFAULT_MIN_HUMIDITY,
     DEFAULT_MAX_HUMIDITY,
@@ -62,6 +67,11 @@ async def async_setup_entry(
     action_on = Script(hass, cfg[CONF_ACTION_ON], name, DOMAIN)
     action_off = Script(hass, cfg[CONF_ACTION_OFF], name, DOMAIN)
 
+    # Template vide ou absent = hygrostat toujours autorisé
+    enable_template = None
+    if tpl := cfg.get(CONF_ENABLE_TEMPLATE):
+        enable_template = Template(tpl, hass)
+
     async_add_entities(
         [
             CustomHygrostat(
@@ -77,6 +87,7 @@ async def async_setup_entry(
                 wet_tolerance=cfg.get(CONF_WET_TOLERANCE, DEFAULT_TOLERANCE),
                 min_cycle_minutes=cfg.get(CONF_MIN_CYCLE_DURATION, DEFAULT_MIN_CYCLE_MINUTES),
                 boost_minutes=cfg.get(CONF_BOOST_DURATION, DEFAULT_BOOST_MINUTES),
+                enable_template=enable_template,
             )
         ]
     )
@@ -107,6 +118,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         wet_tolerance,
         min_cycle_minutes,
         boost_minutes,
+        enable_template,
     ):
         self._attr_unique_id = unique_id
         self._attr_name = name
@@ -129,6 +141,8 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         self._cur_humidity = None
         self._boost_remove = None
         self._last_switched = None
+        self._enable_template = enable_template
+        self._enabled = True
 
     async def async_added_to_hass(self):
         await super().async_added_to_hass()
@@ -138,6 +152,15 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
                 self.hass, [self._sensor_entity_id], self._async_sensor_changed
             )
         )
+
+        if self._enable_template is not None:
+            tpl_info = async_track_template_result(
+                self.hass,
+                [TrackTemplate(self._enable_template, None)],
+                self._async_enable_template_changed,
+            )
+            self.async_on_remove(tpl_info.async_remove)
+            tpl_info.async_refresh()
 
         if (old_state := await self.async_get_last_state()) is not None:
             self._state = old_state.state == "on"
@@ -176,6 +199,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             "device_active": self._active,
             "current_humidity": self._cur_humidity,
             "boost_active": self._attr_mode == self.MODE_BOOST,
+            "enabled": self._enabled,
         }
 
     async def async_turn_on(self, **kwargs):
@@ -206,9 +230,41 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             await self._async_control(force=True)
         self.async_write_ha_state()
 
+    # ----- Condition d'activation (template) -----
+
+    @callback
+    def _async_enable_template_changed(self, event, updates):
+        result = updates.pop().result
+        if isinstance(result, TemplateError):
+            # En erreur, on conserve le dernier état connu
+            _LOGGER.warning("Template d'activation en erreur : %s", result)
+            return
+        enabled = result_as_boolean(result)
+        if enabled == self._enabled:
+            return
+        self._enabled = enabled
+        if enabled:
+            self.hass.async_create_task(self._async_resume())
+        else:
+            self.hass.async_create_task(self._async_interlock_off())
+
+    async def _async_resume(self):
+        await self._async_control(force=True)
+        self.async_write_ha_state()
+
+    async def _async_interlock_off(self):
+        # Coupure prioritaire : annule aussi un boost en cours
+        self._cancel_boost()
+        self._attr_mode = self.MODE_NORMAL
+        await self._async_device_turn_off()
+        self.async_write_ha_state()
+
     # ----- Boost (marche forcée temporisée) -----
 
     async def _async_start_boost(self):
+        if not self._enabled:
+            _LOGGER.warning("Boost refusé : condition d'activation false")
+            return
         if not self._state:
             self._state = True
         self._cancel_boost()
@@ -256,6 +312,8 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
     # ----- Régulation (déshumidificateur uniquement) -----
 
     async def _async_control(self, force=False):
+        if not self._enabled:
+            return
         if self._attr_mode == self.MODE_BOOST:
             return
         if not self._state or self._cur_humidity is None or self._target_humidity is None:
