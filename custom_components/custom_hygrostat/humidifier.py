@@ -37,6 +37,7 @@ from .const import (
     CONF_MIN_HUMIDITY,
     CONF_MAX_HUMIDITY,
     CONF_TARGET_HUMIDITY,
+    CONF_TARGET_ENTITY,
     CONF_DRY_TOLERANCE,
     CONF_WET_TOLERANCE,
     CONF_MIN_CYCLE_DURATION,
@@ -87,6 +88,7 @@ async def async_setup_entry(
                 min_humidity=cfg.get(CONF_MIN_HUMIDITY, DEFAULT_MIN_HUMIDITY),
                 max_humidity=cfg.get(CONF_MAX_HUMIDITY, DEFAULT_MAX_HUMIDITY),
                 target_humidity=cfg.get(CONF_TARGET_HUMIDITY, DEFAULT_TARGET_HUMIDITY),
+                target_entity_id=cfg.get(CONF_TARGET_ENTITY),
                 dry_tolerance=cfg.get(CONF_DRY_TOLERANCE, DEFAULT_TOLERANCE),
                 wet_tolerance=cfg.get(CONF_WET_TOLERANCE, DEFAULT_TOLERANCE),
                 min_cycle_minutes=cfg.get(CONF_MIN_CYCLE_DURATION, DEFAULT_MIN_CYCLE_MINUTES),
@@ -119,6 +121,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         min_humidity,
         max_humidity,
         target_humidity,
+        target_entity_id,
         dry_tolerance,
         wet_tolerance,
         min_cycle_minutes,
@@ -134,6 +137,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         self._attr_min_humidity = min_humidity
         self._attr_max_humidity = max_humidity
         self._target_humidity = target_humidity
+        self._target_entity_id = target_entity_id
         self._dry_tolerance = dry_tolerance
         self._wet_tolerance = wet_tolerance
         self._min_cycle_duration = timedelta(minutes=min_cycle_minutes)
@@ -161,6 +165,13 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             )
         )
 
+        if self._target_entity_id:
+            self.async_on_remove(
+                async_track_state_change_event(
+                    self.hass, [self._target_entity_id], self._async_target_changed
+                )
+            )
+
         track_templates = [
             TrackTemplate(tpl, None)
             for tpl in (self._enable_template, self._error_template)
@@ -175,7 +186,11 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
 
         if (old_state := await self.async_get_last_state()) is not None:
             self._state = old_state.state == "on"
-            if (h := old_state.attributes.get("humidity")) is not None:
+            # L'entité de consigne, si configurée, prime sur la valeur restaurée
+            if (
+                (h := old_state.attributes.get("humidity")) is not None
+                and not self._target_entity_id
+            ):
                 self._target_humidity = h
             if old_state.attributes.get("mode") in self._attr_available_modes:
                 self._attr_mode = old_state.attributes["mode"]
@@ -188,6 +203,13 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
                 STATE_UNKNOWN,
             ):
                 self._update_humidity(sensor_state.state)
+            if self._target_entity_id:
+                target_state = self.hass.states.get(self._target_entity_id)
+                if target_state and target_state.state not in (
+                    STATE_UNAVAILABLE,
+                    STATE_UNKNOWN,
+                ):
+                    self._update_target(target_state.state)
             self.hass.async_create_task(self._async_control(force=True))
             self.async_write_ha_state()
 
@@ -199,6 +221,21 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
     @property
     def is_on(self):
         return self._state
+
+    @property
+    def icon(self):
+        if not self._state:
+            return "mdi:air-humidifier-off"
+        if self._error:
+            return "mdi:water-alert"
+        if not self._enable_ok:
+            return "mdi:water-off"
+        if self._attr_mode == self.MODE_BOOST:
+            return "mdi:rocket-launch"
+        if self._active:
+            return "mdi:air-humidifier"
+        # Régulation en veille : appareil arrêté, humidité sous le seuil
+        return "mdi:water-percent"
 
     @property
     def target_humidity(self):
@@ -227,6 +264,23 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         self.async_write_ha_state()
 
     async def async_set_humidity(self, humidity):
+        if self._target_entity_id:
+            domain = self._target_entity_id.split(".")[0]
+            if domain in ("input_number", "number"):
+                # La nouvelle valeur reviendra via le suivi d'état de l'entité
+                await self.hass.services.async_call(
+                    domain,
+                    "set_value",
+                    {"entity_id": self._target_entity_id, "value": humidity},
+                    blocking=True,
+                    context=self._context,
+                )
+            else:
+                _LOGGER.warning(
+                    "Consigne pilotée par %s (lecture seule) : réglage ignoré",
+                    self._target_entity_id,
+                )
+            return
         self._target_humidity = humidity
         await self._async_control(force=True)
         self.async_write_ha_state()
@@ -263,6 +317,9 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             elif update.template is self._error_template:
                 self._error = result_as_boolean(result)
         if self._enabled == was_enabled:
+            # L'autorisation combinée n'a pas bougé, mais l'icône
+            # ou les attributs peuvent avoir changé
+            self.async_write_ha_state()
             return
         if self._enabled:
             self.hass.async_create_task(self._async_resume())
@@ -310,6 +367,28 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         if self._boost_remove is not None:
             self._boost_remove()
             self._boost_remove = None
+
+    # ----- Entité de consigne -----
+
+    @callback
+    def _async_target_changed(self, event):
+        new_state = event.data.get("new_state")
+        if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return
+        self._update_target(new_state.state)
+        self.hass.async_create_task(self._async_control())
+        self.async_write_ha_state()
+
+    @callback
+    def _update_target(self, state):
+        try:
+            value = float(state)
+        except (ValueError, TypeError):
+            _LOGGER.warning("Consigne illisible : %s", state)
+            return
+        self._target_humidity = min(
+            max(value, self._attr_min_humidity), self._attr_max_humidity
+        )
 
     # ----- Capteur -----
 

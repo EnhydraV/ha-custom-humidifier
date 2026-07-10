@@ -26,6 +26,7 @@ Tout se configure via l'interface (config flow + options flow). L'intégration e
 | Actions à l'allumage | Séquence exécutée quand le déshumidificateur doit démarrer |
 | Actions à l'extinction | Séquence exécutée quand il doit s'arrêter |
 | Humidité cible | Consigne d'humidité (%) |
+| Entité de consigne | `input_number`, `number` ou `sensor` optionnel qui pilote la consigne |
 | Tolérance humide | Démarrage quand humidité ≥ cible + tolérance humide |
 | Tolérance sèche | Arrêt quand humidité ≤ cible − tolérance sèche |
 | Humidité min / max | Bornes réglables de la consigne |
@@ -39,6 +40,15 @@ Tout se configure via l'interface (config flow + options flow). L'intégration e
 L'appareil **démarre** quand `humidité ≥ cible + tolérance humide` et **s'arrête** quand `humidité ≤ cible − tolérance sèche`. Entre les deux, il conserve son état (hystérésis).
 
 Le mode `boost` ignore la régulation, force la marche pour la durée configurée, puis revient automatiquement en mode `normal`.
+
+### Entité de consigne
+
+Si une entité de consigne est configurée, sa valeur (bornée par humidité min/max) devient la consigne de l'hygrostat et est suivie en continu :
+
+- **`input_number` / `number`** : synchronisation bidirectionnelle — régler la consigne sur la carte de l'hygrostat écrit dans l'entité, et modifier l'entité met à jour l'hygrostat.
+- **`sensor`** : l'entité commande seule ; le réglage direct sur l'hygrostat est ignoré (warning dans les logs).
+
+Sans entité de consigne, le comportement reste celui d'origine : consigne interne, réglable sur l'entité et restaurée au redémarrage.
 
 ### Conditions d'activation et d'erreur
 

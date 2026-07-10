@@ -28,8 +28,10 @@ Tout se configure dans l'UI (config flow + options flow), zéro YAML.
 
 ## État actuel
 
-- Code écrit et structuré, **jamais testé dans un vrai Home Assistant** à ma
-  connaissance. Aucun test automatisé.
+- **Installé dans une vraie instance HA le 2026-07-10** (Python 3.14) : le config
+  flow initial passe (entrée créée), l'ouverture de l'options flow plantait
+  (`AttributeError: property 'config_entry' ... has no setter`) — corrigé, voir
+  problèmes connus. Aucun test automatisé.
 - Deux commits "initial commit" sur `main`, arbre propre.
 - `hacs.json` cible HA `2026.0.0` minimum ; manifest en `0.1.0`.
 - Repo destiné à être publié comme dépôt custom HACS
@@ -72,6 +74,16 @@ custom_components/custom_hygrostat/
   Cas d'usage d'origine : remplacer l'automatisation « Cave NW » — condition
   d'erreur `{{ is_state('binary_sensor.dryfy_cave_nw_reservoir', 'on') }}`
   (réservoir plein → arrêt).
+- **Entité de consigne (ajoutée le 2026-07-10)** : champ optionnel `target_entity`
+  (`input_number` / `number` / `sensor`). Suivie via
+  `async_track_state_change_event` + lecture initiale au démarrage ; valeur bornée
+  min/max (`_update_target`). `async_set_humidity` : si l'entité est pilotable
+  (`input_number`/`number`), écrit dedans via `set_value` (la valeur revient par le
+  suivi d'état — synchro bidirectionnelle) ; si `sensor`, réglage ignoré + warning.
+  Si configurée, elle prime sur la consigne restaurée (`RestoreEntity`).
+  Piège traité dans le config flow : champ vidé → `setdefault(None)` avant
+  sauvegarde, sinon la fusion `{**data, **options}` ressuscite l'ancienne valeur
+  (champ déclaré avec `suggested_value`, pas de `default`).
 - Boost : `async_set_mode("boost")` force la marche via `_async_device_turn_on()`,
   arme un `async_call_later` de `boost_duration` minutes ; à échéance, retour en
   `normal` + `_async_control(force=True)`. `_async_control` retourne immédiatement
@@ -81,6 +93,13 @@ custom_components/custom_hygrostat/
   `_async_control(force=True)`.
 - Attributs exposés : `device_active` (l'appareil physique est-il censé tourner),
   `current_humidity`, `boost_active`.
+- **Icône dynamique (property `icon`, ajoutée le 2026-07-10)** — MDI intégrés, par
+  priorité : entité off → `mdi:air-humidifier-off` ; erreur → `mdi:water-alert` ;
+  activation false → `mdi:water-off` ; boost → `mdi:rocket-launch` ; appareil en
+  marche → `mdi:air-humidifier` ; veille (régulé, arrêté) → `mdi:water-percent`.
+  Attention : une icône personnalisée posée par l'utilisateur dans l'UI fige
+  l'icône et masque la dynamique. Pas de logo d'intégration (page Intégrations) :
+  il faudrait une PR sur `home-assistant/brands` (`custom_integrations/custom_hygrostat/`).
 - Distinction importante : `_state` = l'hygrostat (l'entité) est actif ;
   `_active` = l'appareil physique tourne. L'entité peut être "on" avec l'appareil
   arrêté (humidité sous la cible).
@@ -106,22 +125,28 @@ custom_components/custom_hygrostat/
    manifest (`domain` + `name`) et `hacs.json` alignés. Les URLs GitHub du manifest
    pointent toujours vers `ha-custom-humidifier` (nom du repo, inchangé). Pas encore
    validé dans une vraie instance HA.
-2. `_async_device_turn_on(bypass_cycle=True)` : le paramètre `bypass_cycle` n'est
+2. ~~**Options flow planté en prod**~~ **CORRIGÉ le 2026-07-10** : depuis
+   HA 2024.11, `OptionsFlow.config_entry` est une property en lecture seule
+   fournie par le framework ; l'assignation `self.config_entry = config_entry`
+   dans `__init__` levait `AttributeError ... no setter` à l'ouverture des
+   options. Fix : `__init__` supprimé, `CustomHygrostatOptionsFlow()` sans
+   argument, `self.config_entry` utilisé tel quel. Détecté au premier test réel.
+3. `_async_device_turn_on(bypass_cycle=True)` : le paramètre `bypass_cycle` n'est
    **jamais utilisé** dans le corps de la méthode. Inoffensif (le check min_cycle est
    dans `_async_control`, que le boost ne traverse pas), mais c'est du code mort qui
    sème le doute — soit l'implémenter, soit le retirer.
-3. Fin de boost : `_async_end_boost` repasse par `_async_control(force=True)`, donc
+4. Fin de boost : `_async_end_boost` repasse par `_async_control(force=True)`, donc
    ignore `min_cycle_duration`. Voulu ? À confirmer, sinon un boost court suivi d'un
    arrêt immédiat peut faire claquer l'appareil deux fois coup sur coup.
-4. Capteur qui passe `unavailable`/`unknown` : on ignore l'événement mais on garde la
+5. Capteur qui passe `unavailable`/`unknown` : on ignore l'événement mais on garde la
    dernière humidité connue et l'appareil reste dans son état courant, potentiellement
    allumé indéfiniment. Le `generic_hygrostat` du core a un `sensor_stale_duration`
    pour ça — à envisager.
-5. `iot_class: local_polling` dans le manifest alors que l'entité est
+6. `iot_class: local_polling` dans le manifest alors que l'entité est
    `should_poll = False` et purement event-driven → `calculated` serait plus honnête.
-6. Aucun test. Au minimum : tests du config flow et de l'hystérésis avec
+7. Aucun test. Au minimum : tests du config flow et de l'hystérésis avec
    `pytest-homeassistant-custom-component`.
-7. Pas de CI (validation hassfest + HACS action seraient bienvenues avant publication).
+8. Pas de CI (validation hassfest + HACS action seraient bienvenues avant publication).
 
 ## Décisions de conception (le "pourquoi")
 

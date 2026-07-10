@@ -23,6 +23,7 @@ from .const import (
     CONF_MIN_HUMIDITY,
     CONF_MAX_HUMIDITY,
     CONF_TARGET_HUMIDITY,
+    CONF_TARGET_ENTITY,
     CONF_DRY_TOLERANCE,
     CONF_WET_TOLERANCE,
     CONF_MIN_CYCLE_DURATION,
@@ -68,6 +69,14 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                 selector.NumberSelectorConfig(
                     min=0, max=100, step=1, unit_of_measurement="%",
                     mode=selector.NumberSelectorMode.SLIDER,
+                )
+            ),
+            vol.Optional(
+                CONF_TARGET_ENTITY,
+                description={"suggested_value": defaults.get(CONF_TARGET_ENTITY)},
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(
+                    domain=["input_number", "number", "sensor"]
                 )
             ),
             vol.Optional(
@@ -164,6 +173,9 @@ class CustomHygrostatConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             errors = _validate(self.hass, user_input)
             if not errors:
+                # Champ vidé = None explicite, sinon la fusion data/options
+                # ressusciterait l'ancienne valeur
+                user_input.setdefault(CONF_TARGET_ENTITY, None)
                 await self.async_set_unique_id(
                     f"{DOMAIN}_{user_input[CONF_NAME].lower().replace(' ', '_')}"
                 )
@@ -180,14 +192,12 @@ class CustomHygrostatConfigFlow(ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
         """Get the options flow."""
-        return CustomHygrostatOptionsFlow(config_entry)
+        # config_entry est fourni par la property OptionsFlow.config_entry
+        return CustomHygrostatOptionsFlow()
 
 
 class CustomHygrostatOptionsFlow(OptionsFlow):
     """Handle options flow (edit after setup)."""
-
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        self.config_entry = config_entry
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -198,6 +208,7 @@ class CustomHygrostatOptionsFlow(OptionsFlow):
         if user_input is not None:
             errors = _validate(self.hass, user_input)
             if not errors:
+                user_input.setdefault(CONF_TARGET_ENTITY, None)
                 return self.async_create_entry(title="", data=user_input)
 
         current = {**self.config_entry.data, **self.config_entry.options}
