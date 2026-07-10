@@ -134,9 +134,7 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                 CONF_DEVICE_ENTITY,
                 description={"suggested_value": defaults.get(CONF_DEVICE_ENTITY)},
             ): selector.EntitySelector(
-                selector.EntitySelectorConfig(
-                    domain=["binary_sensor", "switch", "input_boolean", "humidifier", "fan"]
-                )
+                selector.EntitySelectorConfig(domain="humidifier")
             ),
             vol.Optional(
                 CONF_ENABLE_TEMPLATE,

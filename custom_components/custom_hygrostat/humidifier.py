@@ -20,6 +20,7 @@ from homeassistant.exceptions import TemplateError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import (
     TrackTemplate,
+    async_call_later,
     async_track_state_change_event,
     async_track_template_result,
 )
@@ -49,6 +50,7 @@ from .const import (
     DEFAULT_MAX_HUMIDITY,
     DEFAULT_TARGET_HUMIDITY,
     DEFAULT_MIN_CYCLE_MINUTES,
+    MANUAL_OFF_HOLD,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -151,7 +153,11 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         self._state = False
         self._active = False
         self._cur_humidity = None
+        self._primary_humidity = None
+        self._secondary_humidity = None
         self._last_switched = None
+        self._manual_off_until = None
+        self._manual_hold_remove = None
         self._enable_template = enable_template
         self._error_template = error_template
         self._enable_ok = True
@@ -159,6 +165,8 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
 
     async def async_added_to_hass(self):
         await super().async_added_to_hass()
+
+        self.async_on_remove(self._clear_manual_hold)
 
         self.async_on_remove(
             async_track_state_change_event(
@@ -187,7 +195,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
                 async_track_state_change_event(
                     self.hass,
                     [self._device_entity_id],
-                    self._async_device_state_changed,
+                    self._async_device_changed,
                 )
             )
 
@@ -230,8 +238,9 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
                 ):
                     self._update_target(target_state.state)
             if self._device_entity_id:
-                # Resynchronise la croyance sur l'état réel de l'appareil
+                # Capteur interne + resynchronisation de l'état réel
                 device_state = self.hass.states.get(self._device_entity_id)
+                self._update_secondary(device_state)
                 if device_state and device_state.state in ("on", "off"):
                     self._active = device_state.state == "on"
             if self._boost_timer_entity_id:
@@ -281,12 +290,17 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         return {
             "device_active": self._active,
             "current_humidity": self._cur_humidity,
+            "primary_humidity": self._primary_humidity,
+            "secondary_humidity": self._secondary_humidity,
             "boost_active": self._attr_mode == self.MODE_BOOST,
             "enabled": self._enabled,
             "error_active": self._error,
+            "manual_off_until": self._manual_off_until,
         }
 
     async def async_turn_on(self, **kwargs):
+        # Action explicite sur l'hygrostat : lève le blocage manuel
+        self._clear_manual_hold()
         self._state = True
         await self._async_control(force=True)
         self.async_write_ha_state()
@@ -408,6 +422,8 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         if self._error:
             _LOGGER.warning("Boost refusé : condition d'erreur active")
             return
+        # Le boost lève le blocage post-extinction manuelle
+        self._clear_manual_hold()
         if not self._state:
             self._state = True
         self._attr_mode = self.MODE_BOOST
@@ -448,18 +464,23 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         else:
             self.hass.async_create_task(self._async_end_boost())
 
-    # ----- Entité d'état de l'appareil (détection manuelle) -----
+    # ----- Entité déshumidificateur (capteur interne + détection manuelle) -----
 
     @callback
-    def _async_device_state_changed(self, event):
+    def _async_device_changed(self, event):
         new_state = event.data.get("new_state")
-        if new_state is None or new_state.state not in ("on", "off"):
+        # Humidité du capteur interne, à chaque changement (état ou attributs)
+        self._update_secondary(new_state)
+        # Détection de la marche/arrêt manuel
+        if (
+            new_state is not None
+            and new_state.state in ("on", "off")
+            and (is_on := new_state.state == "on") != self._active
+        ):
+            self.hass.async_create_task(self._async_handle_manual_switch(is_on))
             return
-        is_on = new_state.state == "on"
-        if is_on == self._active:
-            # Conséquence de nos propres actions : rien à faire
-            return
-        self.hass.async_create_task(self._async_handle_manual_switch(is_on))
+        self.hass.async_create_task(self._async_control())
+        self.async_write_ha_state()
 
     async def _async_handle_manual_switch(self, is_on):
         # L'appareil a changé d'état sans qu'on l'ait commandé
@@ -477,11 +498,41 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
                 self._state = True
             await self._async_start_boost()
         else:
-            # Extinction manuelle : sortie du boost, la régulation reprendra
-            # la main au prochain changement d'humidité (min_cycle respecté)
+            was_boost = self._attr_mode == self.MODE_BOOST
             await self._async_cancel_boost_timer()
             self._attr_mode = self.MODE_NORMAL
+            if not was_boost:
+                # Extinction manuelle hors boost : la régulation ne doit pas
+                # relancer l'appareil avant l'échéance
+                self._set_manual_hold()
+                _LOGGER.info(
+                    "Extinction manuelle : relance auto bloquée pendant %s",
+                    MANUAL_OFF_HOLD,
+                )
         self.async_write_ha_state()
+
+    @callback
+    def _set_manual_hold(self):
+        self._clear_manual_hold()
+        self._manual_off_until = dt_util.utcnow() + MANUAL_OFF_HOLD
+
+        @callback
+        def _hold_expired(_now):
+            self._manual_hold_remove = None
+            self._manual_off_until = None
+            self.hass.async_create_task(self._async_control())
+            self.async_write_ha_state()
+
+        self._manual_hold_remove = async_call_later(
+            self.hass, MANUAL_OFF_HOLD.total_seconds(), _hold_expired
+        )
+
+    @callback
+    def _clear_manual_hold(self):
+        if self._manual_hold_remove is not None:
+            self._manual_hold_remove()
+            self._manual_hold_remove = None
+        self._manual_off_until = None
 
     # ----- Entité de consigne -----
 
@@ -519,10 +570,38 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
     @callback
     def _update_humidity(self, state):
         try:
-            self._cur_humidity = float(state)
+            self._primary_humidity = float(state)
         except (ValueError, TypeError):
             _LOGGER.warning("Humidité illisible : %s", state)
-            self._cur_humidity = None
+            self._primary_humidity = None
+        self._recompute_humidity()
+
+    @callback
+    def _update_secondary(self, state_obj):
+        # Humidité interne (attribut current_humidity) ; indisponible ou
+        # absente = écartée de la moyenne (repli sur le capteur principal)
+        value = None
+        if state_obj is not None and state_obj.state not in (
+            STATE_UNAVAILABLE,
+            STATE_UNKNOWN,
+        ):
+            raw = state_obj.attributes.get("current_humidity")
+            try:
+                value = float(raw)
+            except (ValueError, TypeError):
+                if raw is not None:
+                    _LOGGER.warning("Humidité interne illisible : %s", raw)
+        self._secondary_humidity = value
+        self._recompute_humidity()
+
+    @callback
+    def _recompute_humidity(self):
+        values = [
+            v
+            for v in (self._primary_humidity, self._secondary_humidity)
+            if v is not None
+        ]
+        self._cur_humidity = round(sum(values) / len(values), 1) if values else None
 
     # ----- Régulation (déshumidificateur uniquement) -----
 
@@ -547,6 +626,12 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
                 await self._async_device_turn_off()
         else:
             if too_humid:
+                if (
+                    self._manual_off_until is not None
+                    and dt_util.utcnow() < self._manual_off_until
+                ):
+                    # Extinction manuelle récente : pas de relance auto
+                    return
                 await self._async_device_turn_on()
 
     async def _async_device_turn_on(self):

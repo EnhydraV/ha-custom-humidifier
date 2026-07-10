@@ -54,6 +54,15 @@ custom_components/custom_hygrostat/
 
 - `CustomHygrostat(HumidifierEntity, RestoreEntity)`, device class `DEHUMIDIFIER`,
   feature `MODES` (`normal` / `boost`).
+- **Moyenne avec le capteur interne (2026-07-10, remaniée le jour même)** : le
+  champ `secondary_sensor` séparé a été FUSIONNÉ dans l'entité déshumidificateur
+  (`device_entity`, voir plus bas) : son attribut `current_humidity` sert de
+  lecture secondaire. `_cur_humidity` = moyenne arrondie à 0,1 des lectures
+  disponibles (`_recompute_humidity`) ; interne indisponible/illisible/absente →
+  None → repli sur le principal seul. Asymétrie assumée : le principal ignore
+  les événements `unavailable` (garde la dernière valeur, cf. problème connu
+  n°5), l'interne est écartée de la moyenne. Attributs : `primary_humidity`,
+  `secondary_humidity`, `current_humidity` (valeur effective).
 - Hystérésis inversée (déshumidificateur) :
   - démarre quand `humidité >= cible + wet_tolerance`
   - s'arrête quand `humidité <= cible - dry_tolerance`
@@ -115,14 +124,28 @@ custom_components/custom_hygrostat/
   Attention : une icône personnalisée posée par l'utilisateur dans l'UI fige
   l'icône et masque la dynamique. Pas de logo d'intégration (page Intégrations) :
   il faudrait une PR sur `home-assistant/brands` (`custom_integrations/custom_hygrostat/`).
-- **Entité d'état de l'appareil (ajoutée le 2026-07-10)** : champ optionnel
-  `device_state_entity` (binary_sensor/switch/input_boolean/humidifier/fan).
+- **Entité déshumidificateur (ajoutée le 2026-07-10, ex-`device_state_entity`)** :
+  champ optionnel `device_entity` (domaine `humidifier` uniquement), double rôle
+  via un SEUL tracker (`_async_device_changed`) : capteur interne (attribut
+  `current_humidity` → moyenne, à chaque événement y compris attributs seuls) et
+  détection de la marche manuelle. ATTENTION : la clé de conf a été renommée
+  (`device_state_entity` → `device_entity`) — une entrée configurée avant le
+  renommage doit être re-sauvée via les options.
   Détection de la marche manuelle : état réel `on` alors que `_active` est False
   → `_async_handle_manual_switch(True)` → resync `_active`/`_last_switched` puis
   boost (timer démarré) ; si verrouillé, actions d'extinction exécutées à la
   place. État réel `off` alors que `_active` True → resync + annulation
   timer/boost, la régulation reprendra au prochain événement capteur. Au
-  démarrage HA : resync silencieuse de `_active` (pas de boost). ANTI-COURSE :
+  démarrage HA : resync silencieuse de `_active` (pas de boost).
+- **Blocage post-extinction manuelle (ajouté le 2026-07-10)** : extinction
+  manuelle HORS boost → `_set_manual_hold()` : `_manual_off_until` = maintenant +
+  `MANUAL_OFF_HOLD` (2 h, constante dans const.py) + `async_call_later` pour la
+  relance à l'échéance. Pendant le blocage, `_async_control` refuse uniquement le
+  rallumage (la coupure too_dry reste possible). Levé par : boost
+  (`_async_engage_boost` → `_clear_manual_hold`, donc aussi rallumage manuel),
+  `async_turn_on` de l'entité, ou expiration. Volontairement NON persisté
+  (perdu au redémarrage de HA). Attribut exposé : `manual_off_until`.
+  Extinction manuelle PENDANT un boost : pas de blocage, comportement inchangé. ANTI-COURSE :
   `_async_device_turn_on/off` mettent à jour `_active` AVANT d'exécuter les
   actions, pour que l'événement d'état résultant de nos propres actions soit
   ignoré (`is_on == self._active` dans le callback).

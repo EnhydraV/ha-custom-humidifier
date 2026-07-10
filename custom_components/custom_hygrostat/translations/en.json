@@ -20,7 +20,7 @@
           "error_template": "Error condition (template, true = stop, empty = ignored)",
           "target_entity": "Setpoint entity (optional, drives the target humidity)",
           "boost_timer": "Boost timer (timer entity, active = boost)",
-          "device_state_entity": "Device state entity (optional, detects manual operation)"
+          "device_entity": "Dehumidifier entity (optional: internal sensor + manual detection)"
         }
       }
     },
@@ -51,7 +51,7 @@
           "error_template": "Error condition (template, true = stop, empty = ignored)",
           "target_entity": "Setpoint entity (optional, drives the target humidity)",
           "boost_timer": "Boost timer (timer entity, active = boost)",
-          "device_state_entity": "Device state entity (optional, detects manual operation)"
+          "device_entity": "Dehumidifier entity (optional: internal sensor + manual detection)"
         }
       }
     },

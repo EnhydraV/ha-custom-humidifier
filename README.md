@@ -32,13 +32,15 @@ Tout se configure via l'interface (config flow + options flow). L'intégration e
 | Humidité min / max | Bornes réglables de la consigne |
 | Durée min de cycle | Empêche les cycles marche/arrêt trop rapprochés |
 | Timer de marche forcée | Entité `timer` optionnelle qui pilote le mode `boost` |
-| Entité d'état de l'appareil | Entité optionnelle reflétant l'état réel ; détecte la marche manuelle |
+| Entité déshumidificateur | Entité `humidifier` optionnelle du fabricant : capteur interne (moyenné) + détection manuelle |
 | Condition d'activation | Template optionnel ; `false` = appareil coupé (vide = toujours `true`) |
 | Condition d'erreur | Template optionnel ; `true` = appareil coupé (vide = toujours `false`) |
 
 ## Fonctionnement de la régulation
 
 L'appareil **démarre** quand `humidité ≥ cible + tolérance humide` et **s'arrête** quand `humidité ≤ cible − tolérance sèche`. Entre les deux, il conserve son état (hystérésis).
+
+L'humidité utilisée est celle du capteur principal, ou la **moyenne** avec le capteur interne de l'appareil si une entité déshumidificateur est configurée (lecture de son attribut `current_humidity`). Si le capteur interne est indisponible ou illisible, le principal seul fait foi. Les deux lectures sont exposées dans les attributs `primary_humidity` et `secondary_humidity`, la valeur effective dans `current_humidity`.
 
 ### Marche forcée (boost)
 
@@ -55,10 +57,11 @@ Sans timer configuré, le mode `boost` est une marche forcée sans limite de dur
 
 ### Détection de la marche manuelle
 
-L'hygrostat pilote l'appareil à l'aveugle via les actions : il ne sait pas ce que fait réellement l'appareil. En configurant une **entité d'état de l'appareil** (`switch` de prise, `binary_sensor`, entité `humidifier`/`fan` du fabricant...), il compare l'état réel à ce qu'il croit :
+L'hygrostat pilote l'appareil à l'aveugle via les actions : il ne sait pas ce que fait réellement l'appareil. En configurant l'**entité déshumidificateur** du fabricant, il compare l'état réel (`on`/`off`) à ce qu'il croit :
 
 - **Allumage inattendu** (quelqu'un a démarré l'appareil à la main) → interprété comme une demande de marche forcée : passage en mode `boost` et démarrage du timer. Si l'hygrostat est verrouillé (condition d'erreur/activation), la marche est refusée : les actions d'extinction sont exécutées.
-- **Extinction inattendue** → sortie du boost et resynchronisation ; la régulation reprend la main au prochain changement d'humidité (durée min de cycle respectée). Pour un arrêt durable, éteignez l'entité hygrostat elle-même.
+- **Extinction inattendue hors boost** → la régulation est bloquée pendant **2 h** : l'appareil ne sera pas relancé automatiquement avant l'échéance (attribut `manual_off_until`). Le blocage est levé par un boost (y compris un rallumage manuel), par `humidifier.turn_on` sur l'hygrostat, ou à l'expiration. Il ne survit pas à un redémarrage de HA.
+- **Extinction inattendue pendant un boost** → sortie du boost et resynchronisation ; la régulation reprend la main au prochain changement d'humidité (durée min de cycle respectée).
 - **Au démarrage de HA**, l'état réel de l'appareil resynchronise l'hygrostat (sans déclencher de boost).
 
 ### Entité de consigne

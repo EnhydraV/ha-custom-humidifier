@@ -20,7 +20,7 @@
           "error_template": "Condition d'erreur (template, true = arrêt, vide = ignorée)",
           "target_entity": "Entité de consigne (optionnelle, pilote l'humidité cible)",
           "boost_timer": "Timer de marche forcée (entité timer, actif = boost)",
-          "device_state_entity": "Entité d'état de l'appareil (optionnelle, détecte la marche manuelle)"
+          "device_entity": "Entité déshumidificateur (optionnelle : capteur interne + détection manuelle)"
         }
       }
     },
@@ -51,7 +51,7 @@
           "error_template": "Condition d'erreur (template, true = arrêt, vide = ignorée)",
           "target_entity": "Entité de consigne (optionnelle, pilote l'humidité cible)",
           "boost_timer": "Timer de marche forcée (entité timer, actif = boost)",
-          "device_state_entity": "Entité d'état de l'appareil (optionnelle, détecte la marche manuelle)"
+          "device_entity": "Entité déshumidificateur (optionnelle : capteur interne + détection manuelle)"
         }
       }
     },
