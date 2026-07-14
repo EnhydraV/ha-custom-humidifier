@@ -31,6 +31,7 @@ Tout se configure via l'interface (config flow + options flow). L'intégration e
 | Tolérance sèche | Arrêt quand humidité ≤ cible − tolérance sèche |
 | Humidité min / max | Bornes réglables de la consigne |
 | Durée min de cycle | Empêche les cycles marche/arrêt trop rapprochés |
+| Délai de stabilisation au démarrage | Période de grâce après un redémarrage de HA pendant laquelle l'appareil n'est ni allumé ni éteint (défaut 120 s, 0 = désactivé) |
 | Timer de marche forcée | Entité `timer` optionnelle qui pilote le mode `boost` |
 | Entité déshumidificateur | Entité `humidifier` optionnelle du fabricant : capteur interne (moyenné) + détection manuelle |
 | Condition d'activation | Template optionnel ; `false` = appareil coupé (vide = toujours `true`) |
@@ -64,6 +65,20 @@ L'hygrostat pilote l'appareil à l'aveugle via les actions : il ne sait pas ce q
 - **Extinction inattendue pendant un boost** → sortie du boost et resynchronisation ; la régulation reprend la main au prochain changement d'humidité (durée min de cycle respectée).
 - **Au démarrage de HA**, l'état réel de l'appareil resynchronise l'hygrostat (sans déclencher de boost).
 
+### Stabilisation au démarrage
+
+Au redémarrage de Home Assistant, les entités se réhydratent dans le désordre : le capteur, le capteur interne, la consigne et les templates peuvent faire varier rapidement la décision de régulation, et l'entité déshumidificateur qui revient de `unavailable` risque d'être prise pour une action manuelle.
+
+Pendant le **délai de stabilisation** (configurable, défaut 120 s) démarré à l'événement *Home Assistant started* :
+
+- la régulation n'allume ni n'éteint l'appareil ; à l'échéance, un contrôle forcé applique la décision sur des valeurs stabilisées (attribut `startup_grace_until`) ;
+- les changements d'état de l'entité déshumidificateur resynchronisent l'hygrostat **silencieusement** : pas de boost fantôme ni de blocage 2 h au démarrage ;
+- les coupures de sécurité restent immédiates : condition d'erreur, extinction de l'hygrostat ;
+- le boost n'est pas concerné (un timer restauré ré-engage la marche forcée immédiatement) ;
+- `humidifier.turn_on` sur l'hygrostat lève le délai (action explicite de l'utilisateur).
+
+Le délai ne s'applique qu'à un vrai démarrage de HA, pas au rechargement de l'intégration (modification des options).
+
 ### Entité de consigne
 
 Si une entité de consigne est configurée, sa valeur (bornée par humidité min/max) devient la consigne de l'hygrostat et est suivie en continu :
@@ -96,6 +111,67 @@ Exemple — condition d'erreur pour couper quand le réservoir est plein, sans a
 ```
 
 Nuance : si le capteur passe `unavailable`, `is_state(..., 'on')` rend `false` → pas d'erreur, l'appareil continue. Pour couper aussi sur capteur indisponible (fail-safe) : `{{ not is_state('binary_sensor.dryfy_cave_nw_reservoir', 'off') }}`.
+
+## Exemple de carte Mushroom
+
+Nécessite [Mushroom](https://github.com/piitaya/lovelace-mushroom) (via HACS). À coller dans une carte **Manuel** du dashboard ; adaptez `entity` et `primary`. Toutes les informations viennent des attributs de l'hygrostat, aucune autre entité à référencer.
+
+```yaml
+type: custom:mushroom-template-card
+entity: humidifier.cave_nw
+primary: Cave NW
+secondary: |-
+  {% if state_attr(entity, 'error_active') %}
+    Réservoir plein
+  {% elif states(entity) == 'off' %}
+    Eteint
+  {% elif state_attr(entity, 'boost_active') %}
+    Marche forcée - {{ state_attr(entity, 'current_humidity') }}%
+  {% elif not state_attr(entity, 'enabled') %}
+    Désactivé
+  {% elif state_attr(entity, 'manual_off_until') %}
+    Arrêt manuel - {{ state_attr(entity, 'current_humidity') }}%
+  {% elif state_attr(entity, 'device_active') %}
+    En marche - {{ state_attr(entity, 'current_humidity') }}% → {{ state_attr(entity, 'humidity') }}%
+  {% else %}
+    En veille - {{ state_attr(entity, 'current_humidity') }}%
+  {% endif %}
+icon: |-
+  {% if state_attr(entity, 'error_active') %}
+    mdi:water-alert
+  {% elif states(entity) == 'off' %}
+    mdi:air-humidifier-off
+  {% elif state_attr(entity, 'boost_active') %}
+    mdi:rocket-launch
+  {% elif not state_attr(entity, 'enabled') %}
+    mdi:water-off
+  {% elif state_attr(entity, 'device_active') %}
+    mdi:air-humidifier
+  {% else %}
+    mdi:water-percent
+  {% endif %}
+color: |-
+  {% if state_attr(entity, 'error_active') %}
+    red
+  {% elif states(entity) == 'off' %}
+    grey
+  {% elif state_attr(entity, 'boost_active') %}
+    purple
+  {% elif not state_attr(entity, 'enabled') %}
+    orange
+  {% elif state_attr(entity, 'device_active') %}
+    blue
+  {% else %}
+    green
+  {% endif %}
+features_position: bottom
+icon_tap_action:
+  action: more-info
+tap_action:
+  action: toggle
+```
+
+L'ordre des branches reflète les priorités de l'intégration : erreur > éteint > boost (qui ignore la condition d'activation) > désactivé > régulation.
 
 ## Licence
 

@@ -31,12 +31,14 @@ from .const import (
     CONF_DEVICE_ENTITY,
     CONF_ENABLE_TEMPLATE,
     CONF_ERROR_TEMPLATE,
+    CONF_STARTUP_DELAY,
     DEFAULT_NAME,
     DEFAULT_TOLERANCE,
     DEFAULT_MIN_HUMIDITY,
     DEFAULT_MAX_HUMIDITY,
     DEFAULT_TARGET_HUMIDITY,
     DEFAULT_MIN_CYCLE_MINUTES,
+    DEFAULT_STARTUP_DELAY_SECONDS,
 )
 
 CONF_NAME = "name"
@@ -121,6 +123,15 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
             ): selector.NumberSelector(
                 selector.NumberSelectorConfig(
                     min=0, max=120, step=1, unit_of_measurement="min",
+                    mode=selector.NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Optional(
+                CONF_STARTUP_DELAY,
+                default=defaults.get(CONF_STARTUP_DELAY, DEFAULT_STARTUP_DELAY_SECONDS),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=600, step=5, unit_of_measurement="s",
                     mode=selector.NumberSelectorMode.BOX,
                 )
             ),

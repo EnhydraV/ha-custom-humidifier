@@ -1,7 +1,7 @@
 # HANDOFF — Custom Hygrostat
 
 Journal de bord du projet, pour reprise dans une nouvelle session (humaine ou Claude).
-Dernière mise à jour : 2026-07-10.
+Dernière mise à jour : 2026-07-14.
 
 ## Besoin initial (verbatim)
 
@@ -114,7 +114,25 @@ custom_components/custom_hygrostat/
   immédiatement tant que le mode est `boost`.
 - Restauration après redémarrage (`RestoreEntity`) : état on/off, consigne
   (attribut `humidity`), mode. Au démarrage de HA, lecture du capteur puis
-  `_async_control(force=True)`.
+  `_async_control(force=True)` (bloqué par la période de grâce, voir ci-dessous).
+- **Période de grâce au démarrage (ajoutée le 2026-07-14)** : au restart de HA,
+  les entités se réhydratent dans le désordre → régulation qui claque on/off et
+  device_entity revenant de `unavailable` pris pour une action manuelle (boost
+  fantôme / blocage 2 h). Nouveau champ `startup_delay` (secondes, défaut 120,
+  0 = désactivé, `DEFAULT_STARTUP_DELAY_SECONDS`). Armée UNIQUEMENT lors d'un
+  vrai démarrage (`EVENT_HOMEASSISTANT_START`, via `_async_startup_after_boot`),
+  PAS au reload d'options (hass déjà `running`). Pendant la grâce
+  (`_startup_grace_until` non None, property `_in_startup_grace`) :
+  `_async_control` retourne immédiatement (même avec `force=True`), et les
+  changements on/off de `device_entity` resynchronisent `_active` silencieusement
+  (ni boost ni manual hold — donc une VRAIE action manuelle pendant la grâce est
+  ignorée, assumé). À l'échéance (`async_call_later`) : `_async_control(force=True)`
+  sur valeurs stabilisées. Restent immédiats : coupures d'erreur/suspend
+  (`_async_device_turn_off` direct), `async_turn_off`, engagement du boost
+  (timer restauré actif → marche forcée tout de suite). `async_turn_on` de
+  l'hygrostat lève la grâce (`_clear_startup_grace`, aussi dans async_on_remove).
+  Attribut exposé : `startup_grace_until`. Édge case assumé : fin de boost
+  pendant la grâce → l'appareil reste dans son état jusqu'à l'échéance.
 - Attributs exposés : `device_active` (l'appareil physique est-il censé tourner),
   `current_humidity`, `boost_active`.
 - **Icône dynamique (property `icon`, ajoutée le 2026-07-10)** — MDI intégrés, par
@@ -207,6 +225,13 @@ custom_components/custom_hygrostat/
   plus simple, et acceptable vu la fréquence des changements de config.
 - **Une seule entité par entry** : pas de multi-hygrostat par entrée, on crée
   plusieurs entrées.
+
+## Divers
+
+- Le README contient un exemple de carte Lovelace `mushroom-template-card`
+  (section « Exemple de carte Mushroom ») basée uniquement sur les attributs de
+  l'entité ; l'ordre des branches suit les priorités erreur > off > boost >
+  désactivé > régulation. À tenir à jour si les attributs changent.
 
 ## Reprise rapide
 

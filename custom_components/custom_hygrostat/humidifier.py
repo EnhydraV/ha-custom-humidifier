@@ -45,11 +45,13 @@ from .const import (
     CONF_DEVICE_ENTITY,
     CONF_ENABLE_TEMPLATE,
     CONF_ERROR_TEMPLATE,
+    CONF_STARTUP_DELAY,
     DEFAULT_TOLERANCE,
     DEFAULT_MIN_HUMIDITY,
     DEFAULT_MAX_HUMIDITY,
     DEFAULT_TARGET_HUMIDITY,
     DEFAULT_MIN_CYCLE_MINUTES,
+    DEFAULT_STARTUP_DELAY_SECONDS,
     MANUAL_OFF_HOLD,
 )
 
@@ -95,6 +97,9 @@ async def async_setup_entry(
                 min_cycle_minutes=cfg.get(CONF_MIN_CYCLE_DURATION, DEFAULT_MIN_CYCLE_MINUTES),
                 boost_timer_entity_id=cfg.get(CONF_BOOST_TIMER),
                 device_entity_id=cfg.get(CONF_DEVICE_ENTITY),
+                startup_delay_seconds=cfg.get(
+                    CONF_STARTUP_DELAY, DEFAULT_STARTUP_DELAY_SECONDS
+                ),
                 enable_template=enable_template,
                 error_template=error_template,
             )
@@ -129,6 +134,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         min_cycle_minutes,
         boost_timer_entity_id,
         device_entity_id,
+        startup_delay_seconds,
         enable_template,
         error_template,
     ):
@@ -146,6 +152,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         self._min_cycle_duration = timedelta(minutes=min_cycle_minutes)
         self._boost_timer_entity_id = boost_timer_entity_id
         self._device_entity_id = device_entity_id
+        self._startup_delay = timedelta(seconds=startup_delay_seconds)
 
         self._attr_available_modes = [self.MODE_NORMAL, self.MODE_BOOST]
         self._attr_mode = self.MODE_NORMAL
@@ -158,6 +165,8 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         self._last_switched = None
         self._manual_off_until = None
         self._manual_hold_remove = None
+        self._startup_grace_until = None
+        self._startup_grace_remove = None
         self._enable_template = enable_template
         self._error_template = error_template
         self._enable_ok = True
@@ -167,6 +176,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         await super().async_added_to_hass()
 
         self.async_on_remove(self._clear_manual_hold)
+        self.async_on_remove(self._clear_startup_grace)
 
         self.async_on_remove(
             async_track_state_change_event(
@@ -257,9 +267,19 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             self.async_write_ha_state()
 
         if self.hass.state == CoreState.running:
+            # Rechargement à chaud (options, reload) : états déjà stables
             _async_startup()
         else:
-            self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_START, _async_startup)
+            # Vrai démarrage de HA : les entités se réhydratent dans le
+            # désordre, on laisse retomber la poussière avant de piloter
+            @callback
+            def _async_startup_after_boot(_event):
+                self._arm_startup_grace()
+                _async_startup()
+
+            self.hass.bus.async_listen_once(
+                EVENT_HOMEASSISTANT_START, _async_startup_after_boot
+            )
 
     @property
     def is_on(self):
@@ -296,11 +316,14 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             "enabled": self._enabled,
             "error_active": self._error,
             "manual_off_until": self._manual_off_until,
+            "startup_grace_until": self._startup_grace_until,
         }
 
     async def async_turn_on(self, **kwargs):
         # Action explicite sur l'hygrostat : lève le blocage manuel
+        # et la période de grâce
         self._clear_manual_hold()
+        self._clear_startup_grace()
         self._state = True
         await self._async_control(force=True)
         self.async_write_ha_state()
@@ -477,6 +500,12 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             and new_state.state in ("on", "off")
             and (is_on := new_state.state == "on") != self._active
         ):
+            if self._in_startup_grace:
+                # L'état qui se réhydrate au redémarrage n'est pas une action
+                # manuelle : resynchronisation silencieuse, ni boost ni blocage
+                self._active = is_on
+                self.async_write_ha_state()
+                return
             self.hass.async_create_task(self._async_handle_manual_switch(is_on))
             return
         self.hass.async_create_task(self._async_control())
@@ -533,6 +562,37 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             self._manual_hold_remove()
             self._manual_hold_remove = None
         self._manual_off_until = None
+
+    # ----- Période de grâce au démarrage -----
+
+    @property
+    def _in_startup_grace(self):
+        return self._startup_grace_until is not None
+
+    @callback
+    def _arm_startup_grace(self):
+        if not self._startup_delay:
+            return
+        self._startup_grace_until = dt_util.utcnow() + self._startup_delay
+
+        @callback
+        def _grace_expired(_now):
+            self._startup_grace_remove = None
+            self._startup_grace_until = None
+            _LOGGER.debug("Fin de la période de grâce, régulation appliquée")
+            self.hass.async_create_task(self._async_control(force=True))
+            self.async_write_ha_state()
+
+        self._startup_grace_remove = async_call_later(
+            self.hass, self._startup_delay.total_seconds(), _grace_expired
+        )
+
+    @callback
+    def _clear_startup_grace(self):
+        if self._startup_grace_remove is not None:
+            self._startup_grace_remove()
+            self._startup_grace_remove = None
+        self._startup_grace_until = None
 
     # ----- Entité de consigne -----
 
@@ -609,6 +669,10 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         if not self._enabled:
             return
         if self._attr_mode == self.MODE_BOOST:
+            return
+        if self._in_startup_grace:
+            # Redémarrage de HA : on attend que les valeurs se stabilisent
+            # avant d'allumer ou d'éteindre (contrôle forcé à l'échéance)
             return
         if not self._state or self._cur_humidity is None or self._target_humidity is None:
             return
