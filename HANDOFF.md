@@ -1,7 +1,7 @@
 # HANDOFF — Custom Hygrostat
 
 Journal de bord du projet, pour reprise dans une nouvelle session (humaine ou Claude).
-Dernière mise à jour : 2026-07-14.
+Dernière mise à jour : 2026-07-15.
 
 ## Besoin initial (verbatim)
 
@@ -112,9 +112,11 @@ custom_components/custom_hygrostat/
   Sans timer : marche forcée SANS limite de durée, jusqu'au retour manuel en
   `normal` (mode boost restauré → ré-engagé). `_async_control` retourne
   immédiatement tant que le mode est `boost`.
-- Restauration après redémarrage (`RestoreEntity`) : état on/off, consigne
-  (attribut `humidity`), mode. Au démarrage de HA, lecture du capteur puis
-  `_async_control(force=True)` (bloqué par la période de grâce, voir ci-dessous).
+- Restauration après redémarrage (`RestoreEntity`) : consigne (attribut
+  `humidity`) et mode — PAS l'état on/off, qui reflète la marche réelle et se
+  resynchronise via `device_entity` (sinon repart de off). Au démarrage de HA,
+  lecture du capteur puis `_async_control(force=True)` (bloqué par la période
+  de grâce, voir ci-dessous).
 - **Période de grâce au démarrage (ajoutée le 2026-07-14)** : au restart de HA,
   les entités se réhydratent dans le désordre → régulation qui claque on/off et
   device_entity revenant de `unavailable` pris pour une action manuelle (boost
@@ -130,14 +132,28 @@ custom_components/custom_hygrostat/
   sur valeurs stabilisées. Restent immédiats : coupures d'erreur/suspend
   (`_async_device_turn_off` direct), `async_turn_off`, engagement du boost
   (timer restauré actif → marche forcée tout de suite). `async_turn_on` de
-  l'hygrostat lève la grâce (`_clear_startup_grace`, aussi dans async_on_remove).
+  l'hygrostat lève la grâce (`_clear_startup_grace`, aussi dans async_on_remove)
+  et engage un boost (sémantique 2026-07-15).
   Attribut exposé : `startup_grace_until`. Édge case assumé : fin de boost
   pendant la grâce → l'appareil reste dans son état jusqu'à l'échéance.
-- Attributs exposés : `device_active` (l'appareil physique est-il censé tourner),
-  `current_humidity`, `boost_active`.
+- **État de l'entité = marche réelle (remanié le 2026-07-15)** : `_state`
+  (hygrostat armé/désarmé) a été SUPPRIMÉ — plus d'interrupteur de régulation,
+  « les règles automatiques suffisent » (demande utilisateur). `is_on` renvoie
+  `_active` (l'appareil déshumidifie ou non) ; `_async_device_turn_on/off`
+  publient l'état immédiatement (`async_write_ha_state` juste après la mise à
+  jour de la croyance, avant les actions). L'attribut `device_active`,
+  devenu redondant, a été RETIRÉ (carte du README adaptée : `is_state(entity,
+  'on')`, plus de branche « Eteint »). `turn_on`/`turn_off` calqués sur le
+  bouton physique : `async_turn_on` → `_async_start_boost()` (+ levée de la
+  grâce) ; `async_turn_off` → annulation timer, mode normal, et hors boost
+  `_set_manual_hold()` (blocage 2 h) avant coupure — même sémantique que
+  l'extinction manuelle détectée. La régulation n'est plus conditionnée qu'aux
+  templates, à la grâce, au boost et au blocage manuel.
+- Attributs exposés : `current_humidity`, `boost_active` (+ `primary/secondary_humidity`,
+  `enabled`, `error_active`, `manual_off_until`, `startup_grace_until`).
 - **Icône dynamique (property `icon`, ajoutée le 2026-07-10)** — MDI intégrés, par
-  priorité : entité off → `mdi:air-humidifier-off` ; erreur → `mdi:water-alert` ;
-  activation false → `mdi:water-off` ; boost → `mdi:rocket-launch` ; appareil en
+  priorité : erreur → `mdi:water-alert` ; boost → `mdi:rocket-launch` ;
+  activation false → `mdi:water-off` ; appareil en
   marche → `mdi:air-humidifier` ; veille (régulé, arrêté) → `mdi:water-percent`.
   Attention : une icône personnalisée posée par l'utilisateur dans l'UI fige
   l'icône et masque la dynamique. Pas de logo d'intégration (page Intégrations) :
@@ -158,18 +174,19 @@ custom_components/custom_hygrostat/
 - **Blocage post-extinction manuelle (ajouté le 2026-07-10)** : extinction
   manuelle HORS boost → `_set_manual_hold()` : `_manual_off_until` = maintenant +
   `MANUAL_OFF_HOLD` (2 h, constante dans const.py) + `async_call_later` pour la
-  relance à l'échéance. Pendant le blocage, `_async_control` refuse uniquement le
+  relance à l'échéance. `async_turn_off` de l'entité pose le MÊME blocage
+  (depuis le 2026-07-15). Pendant le blocage, `_async_control` refuse uniquement le
   rallumage (la coupure too_dry reste possible). Levé par : boost
-  (`_async_engage_boost` → `_clear_manual_hold`, donc aussi rallumage manuel),
-  `async_turn_on` de l'entité, ou expiration. Volontairement NON persisté
+  (`_async_engage_boost` → `_clear_manual_hold`, donc aussi rallumage manuel et
+  `async_turn_on`), ou expiration. Volontairement NON persisté
   (perdu au redémarrage de HA). Attribut exposé : `manual_off_until`.
   Extinction manuelle PENDANT un boost : pas de blocage, comportement inchangé. ANTI-COURSE :
   `_async_device_turn_on/off` mettent à jour `_active` AVANT d'exécuter les
   actions, pour que l'événement d'état résultant de nos propres actions soit
   ignoré (`is_on == self._active` dans le callback).
-- Distinction importante : `_state` = l'hygrostat (l'entité) est actif ;
-  `_active` = l'appareil physique tourne. L'entité peut être "on" avec l'appareil
-  arrêté (humidité sous la cible).
+- Distinction importante (historique) : il existait un `_state` (hygrostat
+  armé) distinct de `_active` (appareil qui tourne) — supprimé le 2026-07-15,
+  seul `_active` subsiste et porte l'état de l'entité.
 
 ## Config flow
 
@@ -229,9 +246,11 @@ custom_components/custom_hygrostat/
 ## Divers
 
 - Le README contient un exemple de carte Lovelace `mushroom-template-card`
-  (section « Exemple de carte Mushroom ») basée uniquement sur les attributs de
-  l'entité ; l'ordre des branches suit les priorités erreur > off > boost >
-  désactivé > régulation. À tenir à jour si les attributs changent.
+  (section « Exemple de carte Mushroom ») basée sur l'état et les attributs de
+  l'entité ; l'ordre des branches suit les priorités erreur > boost >
+  désactivé > arrêt manuel > régulation. À tenir à jour si les attributs
+  changent. Une carte copiée avant le 2026-07-15 référence `device_active`
+  (attribut supprimé) et une branche « Eteint » : à remplacer.
 
 ## Reprise rapide
 

@@ -157,7 +157,6 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         self._attr_available_modes = [self.MODE_NORMAL, self.MODE_BOOST]
         self._attr_mode = self.MODE_NORMAL
 
-        self._state = False
         self._active = False
         self._cur_humidity = None
         self._primary_humidity = None
@@ -222,7 +221,6 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             tpl_info.async_refresh()
 
         if (old_state := await self.async_get_last_state()) is not None:
-            self._state = old_state.state == "on"
             # L'entité de consigne, si configurée, prime sur la valeur restaurée
             if (
                 (h := old_state.attributes.get("humidity")) is not None
@@ -283,12 +281,11 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
 
     @property
     def is_on(self):
-        return self._state
+        # L'état de l'entité reflète la marche réelle de l'appareil
+        return self._active
 
     @property
     def icon(self):
-        if not self._state:
-            return "mdi:air-humidifier-off"
         if self._error:
             return "mdi:water-alert"
         # Le boost passe avant l'activation, qu'il ignore
@@ -308,7 +305,6 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
     @property
     def extra_state_attributes(self):
         return {
-            "device_active": self._active,
             "current_humidity": self._cur_humidity,
             "primary_humidity": self._primary_humidity,
             "secondary_humidity": self._secondary_humidity,
@@ -320,18 +316,20 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         }
 
     async def async_turn_on(self, **kwargs):
-        # Action explicite sur l'hygrostat : lève le blocage manuel
-        # et la période de grâce
-        self._clear_manual_hold()
+        # Allumer l'hygrostat = demande de marche immédiate, comme le bouton
+        # de l'appareil : marche forcée (et fin de la période de grâce)
         self._clear_startup_grace()
-        self._state = True
-        await self._async_control(force=True)
+        await self._async_start_boost()
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs):
+        # Éteindre l'hygrostat = même geste que le bouton de l'appareil :
+        # arrêt, et hors boost blocage de la relance automatique
+        was_boost = self._attr_mode == self.MODE_BOOST
         await self._async_cancel_boost_timer()
         self._attr_mode = self.MODE_NORMAL
-        self._state = False
+        if not was_boost and self._active:
+            self._set_manual_hold()
         await self._async_device_turn_off()
         self.async_write_ha_state()
 
@@ -447,8 +445,6 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             return
         # Le boost lève le blocage post-extinction manuelle
         self._clear_manual_hold()
-        if not self._state:
-            self._state = True
         self._attr_mode = self.MODE_BOOST
         await self._async_device_turn_on()
         self.async_write_ha_state()
@@ -523,8 +519,6 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
                 self.async_write_ha_state()
                 return
             _LOGGER.info("Allumage manuel détecté : passage en boost")
-            if not self._state:
-                self._state = True
             await self._async_start_boost()
         else:
             was_boost = self._attr_mode == self.MODE_BOOST
@@ -674,7 +668,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             # Redémarrage de HA : on attend que les valeurs se stabilisent
             # avant d'allumer ou d'éteindre (contrôle forcé à l'échéance)
             return
-        if not self._state or self._cur_humidity is None or self._target_humidity is None:
+        if self._cur_humidity is None or self._target_humidity is None:
             return
 
         if not force and self._min_cycle_duration and self._last_switched:
@@ -705,6 +699,8 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         # déclenché par nos propres actions ne doit pas passer pour manuel
         self._active = True
         self._last_switched = dt_util.utcnow()
+        # _active porte l'état on/off de l'entité : publication immédiate
+        self.async_write_ha_state()
         await self._action_on.async_run(context=self._context)
 
     async def _async_device_turn_off(self):
@@ -712,4 +708,5 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             return
         self._active = False
         self._last_switched = dt_util.utcnow()
+        self.async_write_ha_state()
         await self._action_off.async_run(context=self._context)

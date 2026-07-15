@@ -41,6 +41,8 @@ Tout se configure via l'interface (config flow + options flow). L'intégration e
 
 L'appareil **démarre** quand `humidité ≥ cible + tolérance humide` et **s'arrête** quand `humidité ≤ cible − tolérance sèche`. Entre les deux, il conserve son état (hystérésis).
 
+L'état `on`/`off` de l'entité reflète la **marche réelle de l'appareil** (déshumidification en cours ou non) : la régulation, elle, tourne en permanence — il n'y a pas d'interrupteur pour la désarmer, les conditions d'activation/erreur suffisent. Les services `humidifier.turn_on` / `turn_off` (et le toggle des cartes) agissent comme le bouton physique de l'appareil : `turn_on` déclenche une marche forcée (boost), `turn_off` arrête l'appareil et, hors boost, bloque la relance automatique pendant 2 h.
+
 L'humidité utilisée est celle du capteur principal, ou la **moyenne** avec le capteur interne de l'appareil si une entité déshumidificateur est configurée (lecture de son attribut `current_humidity`). Si le capteur interne est indisponible ou illisible, le principal seul fait foi. Les deux lectures sont exposées dans les attributs `primary_humidity` et `secondary_humidity`, la valeur effective dans `current_humidity`.
 
 ### Marche forcée (boost)
@@ -49,7 +51,7 @@ Le mode `boost` ignore la régulation et force la marche de l'appareil.
 
 Avec une **entité `timer`** configurée (créez un helper Timer avec la durée voulue) :
 
-- passer l'hygrostat en mode `boost` démarre le timer ; repasser en `normal` (ou éteindre l'hygrostat, ou un verrouillage par template) l'annule ;
+- passer l'hygrostat en mode `boost` (ou `humidifier.turn_on`) démarre le timer ; repasser en `normal` (ou `humidifier.turn_off`, ou un verrouillage par la condition d'erreur) l'annule ;
 - démarrer/annuler le timer par ailleurs (automatisation, dashboard) engage/termine aussi le boost — le timer fait foi ;
 - à expiration du timer, retour automatique en régulation normale ;
 - le timer étant restauré par HA, un boost en cours survit à un redémarrage.
@@ -61,7 +63,7 @@ Sans timer configuré, le mode `boost` est une marche forcée sans limite de dur
 L'hygrostat pilote l'appareil à l'aveugle via les actions : il ne sait pas ce que fait réellement l'appareil. En configurant l'**entité déshumidificateur** du fabricant, il compare l'état réel (`on`/`off`) à ce qu'il croit :
 
 - **Allumage inattendu** (quelqu'un a démarré l'appareil à la main) → interprété comme une demande de marche forcée : passage en mode `boost` et démarrage du timer. Si l'hygrostat est verrouillé (condition d'erreur/activation), la marche est refusée : les actions d'extinction sont exécutées.
-- **Extinction inattendue hors boost** → la régulation est bloquée pendant **2 h** : l'appareil ne sera pas relancé automatiquement avant l'échéance (attribut `manual_off_until`). Le blocage est levé par un boost (y compris un rallumage manuel), par `humidifier.turn_on` sur l'hygrostat, ou à l'expiration. Il ne survit pas à un redémarrage de HA.
+- **Extinction inattendue hors boost** → la régulation est bloquée pendant **2 h** : l'appareil ne sera pas relancé automatiquement avant l'échéance (attribut `manual_off_until`). `humidifier.turn_off` sur l'hygrostat produit le même blocage. Il est levé par un boost (y compris un rallumage manuel ou `humidifier.turn_on`) ou à l'expiration, et ne survit pas à un redémarrage de HA.
 - **Extinction inattendue pendant un boost** → sortie du boost et resynchronisation ; la régulation reprend la main au prochain changement d'humidité (durée min de cycle respectée).
 - **Au démarrage de HA**, l'état réel de l'appareil resynchronise l'hygrostat (sans déclencher de boost).
 
@@ -73,9 +75,9 @@ Pendant le **délai de stabilisation** (configurable, défaut 120 s) démarré �
 
 - la régulation n'allume ni n'éteint l'appareil ; à l'échéance, un contrôle forcé applique la décision sur des valeurs stabilisées (attribut `startup_grace_until`) ;
 - les changements d'état de l'entité déshumidificateur resynchronisent l'hygrostat **silencieusement** : pas de boost fantôme ni de blocage 2 h au démarrage ;
-- les coupures de sécurité restent immédiates : condition d'erreur, extinction de l'hygrostat ;
+- les coupures de sécurité restent immédiates : condition d'erreur, `humidifier.turn_off` ;
 - le boost n'est pas concerné (un timer restauré ré-engage la marche forcée immédiatement) ;
-- `humidifier.turn_on` sur l'hygrostat lève le délai (action explicite de l'utilisateur).
+- `humidifier.turn_on` sur l'hygrostat lève le délai et engage la marche forcée (action explicite de l'utilisateur).
 
 Le délai ne s'applique qu'à un vrai démarrage de HA, pas au rechargement de l'intégration (modification des options).
 
@@ -123,15 +125,13 @@ primary: Cave NW
 secondary: |-
   {% if state_attr(entity, 'error_active') %}
     Réservoir plein
-  {% elif states(entity) == 'off' %}
-    Eteint
   {% elif state_attr(entity, 'boost_active') %}
     Marche forcée - {{ state_attr(entity, 'current_humidity') }}%
   {% elif not state_attr(entity, 'enabled') %}
     Désactivé
   {% elif state_attr(entity, 'manual_off_until') %}
     Arrêt manuel - {{ state_attr(entity, 'current_humidity') }}%
-  {% elif state_attr(entity, 'device_active') %}
+  {% elif is_state(entity, 'on') %}
     En marche - {{ state_attr(entity, 'current_humidity') }}% → {{ state_attr(entity, 'humidity') }}%
   {% else %}
     En veille - {{ state_attr(entity, 'current_humidity') }}%
@@ -139,13 +139,11 @@ secondary: |-
 icon: |-
   {% if state_attr(entity, 'error_active') %}
     mdi:water-alert
-  {% elif states(entity) == 'off' %}
-    mdi:air-humidifier-off
   {% elif state_attr(entity, 'boost_active') %}
     mdi:rocket-launch
   {% elif not state_attr(entity, 'enabled') %}
     mdi:water-off
-  {% elif state_attr(entity, 'device_active') %}
+  {% elif is_state(entity, 'on') %}
     mdi:air-humidifier
   {% else %}
     mdi:water-percent
@@ -153,13 +151,13 @@ icon: |-
 color: |-
   {% if state_attr(entity, 'error_active') %}
     red
-  {% elif states(entity) == 'off' %}
-    grey
   {% elif state_attr(entity, 'boost_active') %}
     purple
   {% elif not state_attr(entity, 'enabled') %}
     orange
-  {% elif state_attr(entity, 'device_active') %}
+  {% elif state_attr(entity, 'manual_off_until') %}
+    grey
+  {% elif is_state(entity, 'on') %}
     blue
   {% else %}
     green
@@ -171,7 +169,7 @@ tap_action:
   action: toggle
 ```
 
-L'ordre des branches reflète les priorités de l'intégration : erreur > éteint > boost (qui ignore la condition d'activation) > désactivé > régulation.
+L'ordre des branches reflète les priorités de l'intégration : erreur > boost (qui ignore la condition d'activation) > désactivé > arrêt manuel > régulation. L'état `on`/`off` de l'entité étant la marche réelle de l'appareil, le `tap_action: toggle` agit comme son bouton physique : arrêt (avec blocage 2 h) s'il tourne, marche forcée sinon.
 
 ## Licence
 
