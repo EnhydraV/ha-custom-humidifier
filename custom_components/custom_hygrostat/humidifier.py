@@ -42,6 +42,7 @@ from .const import (
     CONF_WET_TOLERANCE,
     CONF_MIN_CYCLE_DURATION,
     CONF_BOOST_TIMER,
+    CONF_BOOST_HUMIDITY,
     CONF_DEVICE_ENTITY,
     CONF_ENABLE_TEMPLATE,
     CONF_ERROR_TEMPLATE,
@@ -50,6 +51,7 @@ from .const import (
     DEFAULT_MIN_HUMIDITY,
     DEFAULT_MAX_HUMIDITY,
     DEFAULT_TARGET_HUMIDITY,
+    DEFAULT_BOOST_HUMIDITY,
     DEFAULT_MIN_CYCLE_MINUTES,
     DEFAULT_STARTUP_DELAY_SECONDS,
     MANUAL_OFF_HOLD,
@@ -96,6 +98,7 @@ async def async_setup_entry(
                 wet_tolerance=cfg.get(CONF_WET_TOLERANCE, DEFAULT_TOLERANCE),
                 min_cycle_minutes=cfg.get(CONF_MIN_CYCLE_DURATION, DEFAULT_MIN_CYCLE_MINUTES),
                 boost_timer_entity_id=cfg.get(CONF_BOOST_TIMER),
+                boost_humidity=cfg.get(CONF_BOOST_HUMIDITY, DEFAULT_BOOST_HUMIDITY),
                 device_entity_id=cfg.get(CONF_DEVICE_ENTITY),
                 startup_delay_seconds=cfg.get(
                     CONF_STARTUP_DELAY, DEFAULT_STARTUP_DELAY_SECONDS
@@ -133,6 +136,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         wet_tolerance,
         min_cycle_minutes,
         boost_timer_entity_id,
+        boost_humidity,
         device_entity_id,
         startup_delay_seconds,
         enable_template,
@@ -151,6 +155,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         self._wet_tolerance = wet_tolerance
         self._min_cycle_duration = timedelta(minutes=min_cycle_minutes)
         self._boost_timer_entity_id = boost_timer_entity_id
+        self._boost_humidity = boost_humidity
         self._device_entity_id = device_entity_id
         self._startup_delay = timedelta(seconds=startup_delay_seconds)
 
@@ -300,6 +305,9 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
 
     @property
     def target_humidity(self):
+        # En boost, la consigne forcée remplace la consigne normale
+        if self._attr_mode == self.MODE_BOOST:
+            return self._boost_humidity
         return self._target_humidity
 
     @property
@@ -446,7 +454,9 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         # Le boost lève le blocage post-extinction manuelle
         self._clear_manual_hold()
         self._attr_mode = self.MODE_BOOST
-        await self._async_device_turn_on()
+        # Le boost ne force pas la marche : il force la consigne,
+        # la régulation normale fait le reste
+        await self._async_control(force=True)
         self.async_write_ha_state()
 
     async def _async_end_boost(self):
@@ -518,8 +528,13 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
                 await self._async_device_turn_off()
                 self.async_write_ha_state()
                 return
-            _LOGGER.info("Allumage manuel détecté : passage en boost")
-            await self._async_start_boost()
+            # Un rallumage manuel lève le blocage post-extinction
+            self._clear_manual_hold()
+            _LOGGER.info("Allumage manuel détecté : la régulation suit")
+            # 2026-07-20 : l'allumage manuel ne déclenche plus le boost,
+            # l'appareil tourne puis la régulation reprend la main
+            # _LOGGER.info("Allumage manuel détecté : passage en boost")
+            # await self._async_start_boost()
         else:
             was_boost = self._attr_mode == self.MODE_BOOST
             await self._async_cancel_boost_timer()
@@ -660,15 +675,18 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
     # ----- Régulation (déshumidificateur uniquement) -----
 
     async def _async_control(self, force=False):
-        if not self._enabled:
+        if self._error:
             return
-        if self._attr_mode == self.MODE_BOOST:
+        # Le boost ignore la condition d'activation, pas l'erreur
+        if not self._enable_ok and self._attr_mode != self.MODE_BOOST:
             return
         if self._in_startup_grace:
             # Redémarrage de HA : on attend que les valeurs se stabilisent
             # avant d'allumer ou d'éteindre (contrôle forcé à l'échéance)
             return
-        if self._cur_humidity is None or self._target_humidity is None:
+        # Consigne effective : celle du boost quand il est engagé
+        target = self.target_humidity
+        if self._cur_humidity is None or target is None:
             return
 
         if not force and self._min_cycle_duration and self._last_switched:
@@ -676,8 +694,8 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             if elapsed < self._min_cycle_duration:
                 return
 
-        too_humid = self._cur_humidity >= self._target_humidity + self._wet_tolerance
-        too_dry = self._cur_humidity <= self._target_humidity - self._dry_tolerance
+        too_humid = self._cur_humidity >= target + self._wet_tolerance
+        too_dry = self._cur_humidity <= target - self._dry_tolerance
 
         if self._active:
             if too_dry:

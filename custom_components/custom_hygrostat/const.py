@@ -15,6 +15,8 @@ CONF_DRY_TOLERANCE = "dry_tolerance"
 CONF_WET_TOLERANCE = "wet_tolerance"
 CONF_MIN_CYCLE_DURATION = "min_cycle_duration"
 CONF_BOOST_TIMER = "boost_timer"
+# Consigne forcée pendant le mode boost
+CONF_BOOST_HUMIDITY = "boost_humidity"
 # Entité humidifier du fabricant : capteur interne + détection manuelle
 CONF_DEVICE_ENTITY = "device_entity"
 CONF_ENABLE_TEMPLATE = "enable_template"
@@ -27,6 +29,7 @@ DEFAULT_TOLERANCE = 3
 DEFAULT_MIN_HUMIDITY = 30
 DEFAULT_MAX_HUMIDITY = 99
 DEFAULT_TARGET_HUMIDITY = 55
+DEFAULT_BOOST_HUMIDITY = 50
 DEFAULT_MIN_CYCLE_MINUTES = 0
 DEFAULT_STARTUP_DELAY_SECONDS = 120
 

@@ -1,7 +1,7 @@
 # HANDOFF — Custom Hygrostat
 
 Journal de bord du projet, pour reprise dans une nouvelle session (humaine ou Claude).
-Dernière mise à jour : 2026-07-15.
+Dernière mise à jour : 2026-07-20.
 
 ## Besoin initial (verbatim)
 
@@ -21,8 +21,9 @@ mais avec deux différences majeures :
 1. **Pas d'entité switch pilotée** : l'allumage/extinction de l'appareil passe par des
    **séquences d'actions** arbitraires (`Script` HA), éditables dans l'UI via
    `ActionSelector` — prise connectée, commande IR, notification, peu importe.
-2. **Mode `boost`** : marche forcée temporisée qui court-circuite la régulation pendant
-   une durée configurable, puis retour automatique en mode `normal`.
+2. **Mode `boost`** : « marche forcée » temporisée par une entité `timer` — depuis le
+   2026-07-20, il ne court-circuite plus la régulation mais force la CONSIGNE
+   (défaut 50 %), la régulation faisant le reste.
 
 Tout se configure dans l'UI (config flow + options flow), zéro YAML.
 
@@ -100,18 +101,35 @@ custom_components/custom_hygrostat/
   Piège traité dans le config flow : champ vidé → `setdefault(None)` avant
   sauvegarde, sinon la fusion `{**data, **options}` ressuscite l'ancienne valeur
   (champ déclaré avec `suggested_value`, pas de `default`).
-- **Boost (remanié le 2026-07-10)** : le minuteur interne (`boost_duration` +
-  `async_call_later`) a été SUPPRIMÉ au profit d'une entité `timer` optionnelle
-  (`boost_timer`). Avec timer : `async_set_mode("boost")` appelle `timer.start`,
+- **Boost (remanié le 2026-07-10, resémantisé le 2026-07-20)** : le minuteur
+  interne (`boost_duration` + `async_call_later`) a été SUPPRIMÉ au profit d'une
+  entité `timer` optionnelle (`boost_timer`). Avec timer :
+  `async_set_mode("boost")` appelle `timer.start`,
   et c'est le suivi d'état du timer (`_async_boost_timer_changed`) qui engage
   (`active` → `_async_engage_boost`) ou termine (autre état → `_async_end_boost`)
   le boost — le timer fait foi, y compris démarré/annulé de l'extérieur. Retour
   en `normal`, extinction de l'entité ou verrouillage template →
   `_async_cancel_boost_timer` (timer.cancel). Au démarrage, l'état du timer
   restauré par HA prime sur le mode restauré (un boost survit donc au restart).
-  Sans timer : marche forcée SANS limite de durée, jusqu'au retour manuel en
-  `normal` (mode boost restauré → ré-engagé). `_async_control` retourne
-  immédiatement tant que le mode est `boost`.
+  Sans timer : boost SANS limite de durée, jusqu'au retour manuel en
+  `normal` (mode boost restauré → ré-engagé).
+  **Consigne forcée (2026-07-20, demande utilisateur)** : le boost ne force
+  PLUS la marche de l'appareil ; il force la consigne à `boost_humidity`
+  (nouveau champ, `CONF_BOOST_HUMIDITY`, défaut `DEFAULT_BOOST_HUMIDITY` = 50).
+  La property `target_humidity` renvoie cette valeur tant que le mode est
+  `boost` (la consigne normale, interne ou pilotée par `target_entity`, est
+  restaurée à la sortie). `_async_control` ne retourne plus early en boost :
+  la régulation tourne pendant le boost avec la consigne effective
+  (`self.target_humidity`). Les gardes d'autorisation ont été éclatées :
+  `if self._error: return` puis `if not self._enable_ok and mode != boost:
+  return` — le boost ignore toujours l'activation mais pas l'erreur.
+  `_async_engage_boost` ne fait plus `_async_device_turn_on()` mais
+  `_async_control(force=True)`. Conséquences assumées : un boost n'allume
+  l'appareil que si humidité > consigne boost + wet_tolerance (un allumage
+  manuel avec air déjà sec → rééteint aussitôt par la régulation) ; l'appareil
+  s'arrête de lui-même en plein boost une fois `<= boost − dry_tolerance` ;
+  pendant la grâce de démarrage, l'engagement du boost n'allume plus
+  immédiatement (la régulation appliquera la consigne boost à l'échéance).
 - Restauration après redémarrage (`RestoreEntity`) : consigne (attribut
   `humidity`) et mode — PAS l'état on/off, qui reflète la marche réelle et se
   resynchronise via `device_entity` (sinon repart de off). Au démarrage de HA,
@@ -130,8 +148,10 @@ custom_components/custom_hygrostat/
   (ni boost ni manual hold — donc une VRAIE action manuelle pendant la grâce est
   ignorée, assumé). À l'échéance (`async_call_later`) : `_async_control(force=True)`
   sur valeurs stabilisées. Restent immédiats : coupures d'erreur/suspend
-  (`_async_device_turn_off` direct), `async_turn_off`, engagement du boost
-  (timer restauré actif → marche forcée tout de suite). `async_turn_on` de
+  (`_async_device_turn_off` direct), `async_turn_off`. L'engagement du boost
+  pendant la grâce ne pilote plus rien depuis le 2026-07-20 (le mode passe à
+  `boost` mais la consigne forcée ne s'applique qu'à l'échéance de la grâce,
+  via `_async_control`). `async_turn_on` de
   l'hygrostat lève la grâce (`_clear_startup_grace`, aussi dans async_on_remove)
   et engage un boost (sémantique 2026-07-15).
   Attribut exposé : `startup_grace_until`. Édge case assumé : fin de boost
@@ -166,9 +186,14 @@ custom_components/custom_hygrostat/
   (`device_state_entity` → `device_entity`) — une entrée configurée avant le
   renommage doit être re-sauvée via les options.
   Détection de la marche manuelle : état réel `on` alors que `_active` est False
-  → `_async_handle_manual_switch(True)` → resync `_active`/`_last_switched` puis
-  boost (timer démarré) ; si verrouillé, actions d'extinction exécutées à la
-  place. État réel `off` alors que `_active` True → resync + annulation
+  → `_async_handle_manual_switch(True)` → resync `_active`/`_last_switched`,
+  levée du blocage 2 h éventuel, et c'est tout : la régulation reprend la main
+  (extinction quand too_dry). Le passage automatique en boost (comportement
+  2026-07-10) a été MIS EN COMMENTAIRE le 2026-07-20 à la demande de
+  l'utilisateur (« commenter le code qui allume le mode boost à l'allumage
+  manuel ») — le code est encore là, commenté, si on veut le réactiver.
+  Si condition d'erreur active, actions d'extinction exécutées à la place.
+  État réel `off` alors que `_active` True → resync + annulation
   timer/boost, la régulation reprendra au prochain événement capteur. Au
   démarrage HA : resync silencieuse de `_active` (pas de boost).
 - **Blocage post-extinction manuelle (ajouté le 2026-07-10)** : extinction
@@ -226,9 +251,15 @@ custom_components/custom_hygrostat/
    pour ça — à envisager.
 6. `iot_class: local_polling` dans le manifest alors que l'entité est
    `should_poll = False` et purement event-driven → `calculated` serait plus honnête.
-7. Aucun test. Au minimum : tests du config flow et de l'hystérésis avec
+7. Allumage manuel pendant que la condition d'activation est `false` : la
+   régulation étant suspendue (et le boost n'étant plus déclenché depuis le
+   2026-07-20), l'appareil tourne sans garde-fou jusqu'au prochain basculement
+   du template d'activation (le retour à `true` relance `_async_control`, qui
+   l'éteindra si too_dry). La condition d'erreur, elle, refuse toujours la
+   marche immédiatement. Assumé pour l'instant.
+8. Aucun test. Au minimum : tests du config flow et de l'hystérésis avec
    `pytest-homeassistant-custom-component`.
-8. Pas de CI (validation hassfest + HACS action seraient bienvenues avant publication).
+9. Pas de CI (validation hassfest + HACS action seraient bienvenues avant publication).
 
 ## Décisions de conception (le "pourquoi")
 

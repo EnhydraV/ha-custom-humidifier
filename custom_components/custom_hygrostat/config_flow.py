@@ -28,6 +28,7 @@ from .const import (
     CONF_WET_TOLERANCE,
     CONF_MIN_CYCLE_DURATION,
     CONF_BOOST_TIMER,
+    CONF_BOOST_HUMIDITY,
     CONF_DEVICE_ENTITY,
     CONF_ENABLE_TEMPLATE,
     CONF_ERROR_TEMPLATE,
@@ -37,6 +38,7 @@ from .const import (
     DEFAULT_MIN_HUMIDITY,
     DEFAULT_MAX_HUMIDITY,
     DEFAULT_TARGET_HUMIDITY,
+    DEFAULT_BOOST_HUMIDITY,
     DEFAULT_MIN_CYCLE_MINUTES,
     DEFAULT_STARTUP_DELAY_SECONDS,
 )
@@ -140,6 +142,15 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                 description={"suggested_value": defaults.get(CONF_BOOST_TIMER)},
             ): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain="timer")
+            ),
+            vol.Optional(
+                CONF_BOOST_HUMIDITY,
+                default=defaults.get(CONF_BOOST_HUMIDITY, DEFAULT_BOOST_HUMIDITY),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=100, step=1, unit_of_measurement="%",
+                    mode=selector.NumberSelectorMode.SLIDER,
+                )
             ),
             vol.Optional(
                 CONF_DEVICE_ENTITY,
