@@ -290,3 +290,194 @@ custom_components/custom_hygrostat/
   `config/custom_components/` d'une instance HA (ou monter le repo), redémarrer,
   ajouter l'intégration. Le point 1 (domaine) est corrigé mais jamais validé en
   conditions réelles : c'est la première chose à vérifier.
+
+## Diagnostic en production du 2026-08-28 (instance ha.cocodrilo.enhydra.fr)
+
+Session de diagnostic sans modification de code. Sources : API REST HA (states,
+history 3 jours, logbook, config des entries via options flow ouvert puis
+abandonne), WebSocket `system_log/list`, configs des 91 automations et 41
+scripts. HA 2026.8.3, Python 3.14. Quatre entries chargees : DH Salle a manger
+d'ete, DH Cave NW, DH Salle de bain, DH SDB NE.
+
+### Contexte materiel (cause racine de la majorite des derapages)
+
+Les quatre appareils reels sont des DryFy pilotes par `tuya_local`, et cette
+couche est instable :
+- `DryFy SAM d'ete` et `DryFy SDB NE` : entries en `setup_retry`
+  (« tuya-local device offline », erreur 914 « check device key or version,
+  likely needs a power cycle »). Leurs entites sont `unavailable` depuis au
+  moins le 24/08 : les hygrostats DH SAM d'ete et DH SDB NE pilotent le vide
+  depuis des jours tout en affichant « en marche ».
+- `DryFy SDB` et `DryFy Cave NW` : entries chargees mais l'appareil decroche en
+  boucle (539 « Failed to fetch device status / Device Unreachable », 243
+  « error reading »). L'entite humidifier passe `unknown` toutes les quelques
+  minutes (~50 fois en 3 jours pour Cave NW) puis republie son etat.
+- Preuve directe du « marque en marche alors que rien ne tourne » : 480
+  warnings `Referenced entities ... are missing or not currently available`
+  (dont `humidifier.cave_nw_dryfy_cave_nw`, `fan.dryfy_sdb_ne`). Les actions
+  on/off partent dans le vide, l'entite publie quand meme `on`.
+
+### Bugs de configuration cote instance (pas le code)
+
+1. **DH SDB NE : `turn_off_action` VIDE.** L'hygrostat passe a `off` et n'envoie
+   rien. Le schema le permet (`vol.Required(..., default=[])` accepte la liste
+   vide) : a valider dans `_validate()`.
+2. **DH SAM d'ete : `turn_on_action` contient `humidifier.set_mode {mode:
+   boost}` ciblant `humidifier.dh_salle_a_manger_d_ete`, soit lui-meme** (les
+   trois autres entries ciblent bien le DryFy). Chaque demarrage automatique se
+   transforme donc en marche forcee de 1 h a 50 % (visible le 08-25 20:05:42 et
+   le 08-27 00:23:55 : `on|normal|60` puis `on|boost|50` dans la meme seconde,
+   retour a `normal` exactement 1 h plus tard).
+3. **`script.initialisation_deshumidificateurs`** (appele par les automations
+   `Presence` ET `Absence`) fait `humidifier.turn_on` sur les 4 hygrostats puis
+   `timer.finish` sur 3 des 4 timers. Depuis la resemantisation du 2026-07-15
+   (`turn_on` = marche forcee), ce script veut dire « boost puis annule
+   aussitot » : les 4 entites claquent on/off dans la meme seconde a chaque
+   changement de presence (08-26 09:48:05, 15:57:21, 18:22:15, 08-27 19:43:06).
+   Et `timer.marche_forcee_dh_cave_nw` n'est PAS dans la liste des
+   `timer.finish` : la cave part en boost 2 h a 50 % a chaque bascule de
+   presence (08-25 15:16 -> 18:15, 08-26 09:48 -> 10:47, 15:38 -> 17:57). C'est
+   l'explication principale du « en marche alors qu'il devrait pas ».
+4. **Templates d'erreur reservoir** du type `{{ is_state('binary_sensor.
+   xxx_reservoir','on') }}` : rendent `False` quand le capteur est
+   `unavailable`, c'est-a-dire precisement quand l'appareil a decroche (souvent
+   parce qu'il s'est arrete, reservoir plein). La securite ne s'applique donc
+   pas au pire moment.
+5. La consigne est pilotee par `sensor.consigne_deshumidificateurs` (domaine
+   `sensor`, donc lecture seule) : `async_set_humidity` est ignore avec un
+   warning, la consigne n'est pas reglable depuis l'UI. Sa valeur bouge selon
+   l'heure (60 / 75 / 80).
+
+### Faiblesses du code confirmees par la prod (a corriger)
+
+Par gravite decroissante :
+
+1. **La croyance `_active` n'est jamais reconciliee avec la realite.**
+   `_async_device_turn_on/off` publient l'etat AVANT de lancer le script, sans
+   `try/except` ni verification a posteriori. Script en echec ou entite cible
+   indisponible = entite bloquee sur `on` indefiniment. Pistes : refuser d'agir
+   (ou passer `available = False`) quand le `device_entity` est indisponible,
+   proteger l'execution du script, et re-verifier l'etat reel N secondes apres
+   l'action pour resynchroniser.
+2. **`_async_device_turn_off` sort tot si `not self._active`** : quand la
+   croyance est desynchronisee (appareil reellement en marche, hygrostat qui se
+   croit a l'arret), aucune commande d'arret ne part plus jamais, y compris
+   l'interlock « reservoir plein ». La securite depend d'une croyance. Il faut
+   un chemin `force` pour les coupures de securite, ou se fier a l'etat reel du
+   `device_entity`.
+3. **Detection « manuelle » trop naive** : tout `on`/`off` du `device_entity`
+   qui contredit la croyance est pris pour une action humaine. Avec tuya_local
+   qui passe par `unknown`/`unavailable` puis republie, ca donne de faux
+   allumages manuels (resync + levee du blocage 2 h) et de fausses extinctions
+   manuelles. Cinq blocages 2 h ont ete poses sur DH Cave NW entre le 26 et le
+   27 (21:26:09, 00:09:45, 03:34:20, 05:45:55, 07:59:04), chaque fois dans la
+   minute suivant un `unknown -> off` du DryFy correle au reservoir. Piste :
+   ignorer (ou traiter en resync silencieuse) toute transition venant de
+   `unknown`/`unavailable`, n'accepter comme manuelle qu'une transition entre
+   deux etats connus, et temporiser.
+4. **Aucun anti-rebond sur les templates.** Le binary_sensor reservoir de Cave
+   NW oscille `on -> off -> on` en 15 a 20 s a chaque tentative de reconnexion
+   (39 transitions en 3 jours). Chaque `off` fugace declenche `_async_resume` ->
+   `_async_control(force=True)` -> rallumage alors que le reservoir est toujours
+   plein. Il faut une duree de stabilite avant de lever une erreur.
+5. **`force=True` distribue trop largement + `min_cycle_duration` a 0 partout**
+   (fin de boost, resume, set_humidity, demarrage) : on observe des series
+   on/off/on/off en 30 s (08-25 14:38:04 -> 14:38:32, 08-26 10:47:29 ->
+   10:48:05). Mauvais pour un compresseur. Le cycle minimum ne devrait etre
+   contournable que pour les COUPURES, jamais pour les rallumages.
+6. **Spam d'etat / recorder** : le DryFy publie `current_humidity` toutes les
+   ~3 s ; `_async_device_changed` recalcule la moyenne, appelle
+   `async_write_ha_state()` ET `_async_control()` a chaque evenement, d'ou
+   4983 points d'historique en 3 jours pour `humidifier.dh_cave_nw` et une
+   humidite effective qui oscille de 0,5 %. N'ecrire que si la valeur arrondie
+   change.
+7. `Script.async_run(context=self._context)` avec `_context` a `None` : warning
+   `Running script requires passing in a context` (constate sur dh_cave_nw et
+   dh_sdb_ne). Passer un `Context` construit explicitement.
+8. Toujours pas traite : probleme connu n°5 (capteur principal `unavailable` ->
+   derniere valeur conservee indefiniment). Les capteurs `sensor.sb_*` sont des
+   groupes qui peuvent partir en `unavailable`.
+9. Aucune garde anti-boucle : rien n'empeche une action on/off de cibler
+   l'hygrostat lui-meme (cf. bug de config n°2), detectable au config flow.
+
+## Correctifs du 2026-08-28 (suite du diagnostic ci-dessus)
+
+Version du manifest passee a **0.2.0**, `iot_class` corrige en `calculated`
+(l'entite est event-driven, `should_poll = False`).
+
+### humidifier.py
+
+- **Disponibilite (nouveau)** : property `available`. Si un `device_entity` est
+  configure et qu'il reste `unavailable` / `unknown` plus de
+  `DEVICE_OFFLINE_GRACE` (60 s), l'hygrostat se declare indisponible au lieu
+  d'afficher une marche imaginaire, et `_async_control` ne pilote plus rien.
+  Retour a un etat exploitable = disponibilite retablie immediatement.
+  Nouvelles properties internes `_device_state` (True/False/None) et
+  `_device_reachable`.
+- **Plus d'action dans le vide** : `_async_device_turn_on` refuse d'agir (avec
+  warning) si l'appareil n'est pas joignable. Les sequences passent par
+  `_async_run_action`, qui attrape les exceptions et RETABLIT la croyance
+  precedente si l'action a echoue.
+- **Coupures de securite inconditionnelles** :
+  `_async_device_turn_off(force=True)` envoie les actions d'extinction meme si
+  `_active` est deja False, des lors que l'appareil, lui, publie `on`. Utilise
+  par `_async_interlock_off`, `_async_suspend`, `_async_leave_boost`,
+  `async_turn_off`, l'allumage manuel refuse et le watchdog capteur.
+- **Detection manuelle assainie** : une transition qui vient de `unknown` /
+  `unavailable` / d'un appareil qui etait hors ligne n'est plus prise pour un
+  geste humain (plus de blocage 2 h fantome). Resynchronisation silencieuse,
+  puis `_async_control`. Le callback ne reecrit l'etat que si quelque chose a
+  reellement change (fin du spam de recorder sur les attributs).
+- **Templates temporises** : `_async_templates_changed` a ete eclate en
+  `_apply_error` / `_apply_enable`. Poser une condition bloquante est immediat,
+  la lever exige `TEMPLATE_CLEAR_DELAY` (60 s) de stabilite
+  (`_schedule_template_clear` / `_cancel_template_clear`). Fin des rallumages
+  a chaque clignotement du capteur de reservoir.
+- **`_async_resume` ne force plus** : une reprise apres blocage respecte la
+  duree minimale de cycle. Le contournement du cycle reste reserve aux gestes
+  explicites (turn_on, boost, changement de consigne) et au demarrage.
+- **Watchdog capteur (probleme connu n°5, traite)** : capteur principal
+  `unavailable` / `unknown` pendant `SENSOR_STALE_TIMEOUT` (30 min) -> la
+  derniere valeur est abandonnee ; s'il ne reste aucune mesure et que
+  l'appareil tourne, il est coupe. Arme uniquement sur un evenement
+  d'indisponibilite, jamais sur le silence d'un capteur (pas de faux positif
+  sur un capteur qui ne publie que sur changement).
+- **Contexte** : `Script.async_run(context=self._context or Context())`, fin du
+  warning « Running script requires passing in a context ».
+
+### config_flow.py
+
+- `_validate()` refuse desormais une sequence d'actions VIDE (`empty_action`) et
+  une action qui cible l'hygrostat lui-meme (`self_reference`, via
+  `_own_entity_ids()` : registre d'entites de l'entry en options,
+  `humidifier.<slug du nom>` a la creation). Nouveaux messages dans
+  `strings.json`, `translations/fr.json` et `translations/en.json`.
+
+### Cote instance (applique en direct par l'API)
+
+- **Dashboard `lovelace`** : les 4 tuiles mushroom des deshumidificateurs
+  etaient restees sur la semantique d'avant le 2026-07-15 (branche `Eteint`
+  placee avant tout le reste, donc affichee des que l'appareil ne tournait pas,
+  et `device_active` supprime depuis, donc branche « En marche » morte : une
+  machine en marche s'affichait « En veille »). Reecrites : appareil
+  injoignable > reservoir > boost > desactive > arret manuel (avec l'heure de
+  fin) > en marche > en veille, plus le double-tap « marche forcee » ajoute sur
+  la tuile Cave NW qui ne l'avait pas. Sauvegarde de l'ancienne configuration
+  complete dans `$SUPERCLAUDE_SCRATCH/lovelace-backup-<horodatage>.json`.
+
+### Reste a faire (non applique)
+
+- Les corrections d'OPTIONS des 4 entries (action d'extinction manquante sur DH
+  SDB NE, auto-reference de l'action d'allumage de DH SAM d'ete,
+  `min_cycle_duration` a 0) n'ont PAS pu etre poussees : le classifieur de
+  permissions de la session a refuse les ecritures sur l'API config_entries. Le
+  script pret a l'emploi est dans le scratchpad de session
+  (`fix_entries.py`) ; sinon, trois minutes dans l'UI des options.
+- `script.initialisation_deshumidificateurs` (appele par Presence et Absence)
+  reste a corriger : il fait `humidifier.turn_on` sur les 4 hygrostats, ce qui
+  veut dire « marche forcee » depuis le 2026-07-15, puis `timer.finish` sur 3
+  timers seulement. Cible : ne garder que le `timer.finish` sur les QUATRE
+  timers, marche forcee comprise pour la cave.
+- Le code corrige n'est pas deploye sur l'instance : il faut copier
+  `custom_components/custom_hygrostat/` (ou passer par HACS) puis redemarrer HA.
+- Toujours aucun test automatise ni CI (problemes connus n°8 et 9).

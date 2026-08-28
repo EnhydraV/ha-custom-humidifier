@@ -23,8 +23,8 @@ Tout se configure via l'interface (config flow + options flow). L'intégration e
 |---|---|
 | Nom | Nom de l'entité hygrostat |
 | Capteur d'humidité | `sensor` de classe `humidity` |
-| Actions à l'allumage | Séquence exécutée quand le déshumidificateur doit démarrer |
-| Actions à l'extinction | Séquence exécutée quand il doit s'arrêter |
+| Actions à l'allumage | Séquence exécutée quand le déshumidificateur doit démarrer (obligatoire, non vide) |
+| Actions à l'extinction | Séquence exécutée quand il doit s'arrêter (obligatoire, non vide) |
 | Humidité cible | Consigne d'humidité (%) |
 | Entité de consigne | `input_number`, `number` ou `sensor` optionnel qui pilote la consigne |
 | Tolérance humide | Démarrage quand humidité ≥ cible + tolérance humide |
@@ -115,6 +115,24 @@ Exemple — condition d'erreur pour couper quand le réservoir est plein, sans a
 
 Nuance : si le capteur passe `unavailable`, `is_state(..., 'on')` rend `false` → pas d'erreur, l'appareil continue. Pour couper aussi sur capteur indisponible (fail-safe) : `{{ not is_state('binary_sensor.dryfy_cave_nw_reservoir', 'off') }}`.
 
+### Quand l'appareil ne répond plus
+
+L'hygrostat ne peut pas être plus fiable que l'entité qu'il pilote. Trois garde-fous, tous actifs uniquement si le champ **Entité déshumidificateur** est renseigné :
+
+- **Entité indisponible** : si l'entité de l'appareil reste `unavailable` / `unknown` plus de 60 secondes, l'hygrostat se déclare lui aussi indisponible plutôt que d'afficher une marche imaginaire, et cesse de piloter. Il redevient disponible dès que l'appareil republie un état.
+- **Aucune action dans le vide** : un allumage est refusé (avec un avertissement dans le journal) tant que l'appareil ne publie pas d'état exploitable, et une séquence d'actions qui échoue remet l'état affiché à sa valeur précédente.
+- **Retour de l'appareil = resynchronisation, pas action manuelle** : un état qui réapparaît après `unknown` / `unavailable` n'est jamais interprété comme un geste humain (donc ni blocage de 2 h, ni levée de blocage) ; l'hygrostat se recale silencieusement puis laisse la régulation trancher.
+
+Les coupures de sécurité (condition d'erreur, condition d'activation `false`, `turn_off`) sont envoyées **même si l'hygrostat se croit déjà à l'arrêt**, dès lors que l'appareil, lui, se déclare en marche.
+
+### Conditions bloquantes : temporisation à la levée
+
+Poser une condition bloquante (erreur `true`, activation `false`) est **immédiat**. La lever demande **60 secondes de stabilité** : un capteur qui clignote (typique d'un appareil qui se reconnecte en boucle) ne relance donc pas la machine à chaque scintillement. Une reprise après blocage respecte aussi la durée minimale de cycle.
+
+### Capteur d'humidité muet
+
+Si le capteur principal passe `unavailable` / `unknown`, sa dernière valeur reste utilisée pendant 30 minutes. Au-delà, elle est abandonnée : la régulation se rabat sur le capteur interne de l'appareil s'il y en a un, et sinon coupe l'appareil plutôt que de le laisser tourner à l'aveugle.
+
 ## Exemple de carte Mushroom
 
 Nécessite [Mushroom](https://github.com/piitaya/lovelace-mushroom) (via HACS). À coller dans une carte **Manuel** du dashboard ; adaptez `entity` et `primary`. Toutes les informations viennent des attributs de l'hygrostat, aucune autre entité à référencer.
@@ -124,10 +142,12 @@ type: custom:mushroom-template-card
 entity: humidifier.cave_nw
 primary: Cave NW
 secondary: |-
-  {% if state_attr(entity, 'error_active') %}
+  {% if states(entity) in ['unavailable', 'unknown'] %}
+    Appareil injoignable
+  {% elif state_attr(entity, 'error_active') %}
     Réservoir plein
   {% elif state_attr(entity, 'boost_active') %}
-    Marche forcée - {{ state_attr(entity, 'current_humidity') }}%
+    Marche forcée - {{ state_attr(entity, 'current_humidity') }}% -> {{ state_attr(entity, 'humidity') }}%
   {% elif not state_attr(entity, 'enabled') %}
     Désactivé
   {% elif state_attr(entity, 'manual_off_until') %}
@@ -135,29 +155,35 @@ secondary: |-
   {% elif is_state(entity, 'on') %}
     En marche - {{ state_attr(entity, 'current_humidity') }}% → {{ state_attr(entity, 'humidity') }}%
   {% else %}
-    En veille - {{ state_attr(entity, 'current_humidity') }}%
+    En veille - {{ state_attr(entity, 'current_humidity') }}% -> {{ state_attr(entity, 'humidity') }}%
   {% endif %}
 icon: |-
-  {% if state_attr(entity, 'error_active') %}
+  {% if states(entity) in ['unavailable', 'unknown'] %}
+    mdi:lan-disconnect
+  {% elif state_attr(entity, 'error_active') %}
     mdi:water-alert
   {% elif state_attr(entity, 'boost_active') %}
     mdi:rocket-launch
   {% elif not state_attr(entity, 'enabled') %}
     mdi:water-off
+  {% elif state_attr(entity, 'manual_off_until') %}
+    mdi:air-humidifier-off
   {% elif is_state(entity, 'on') %}
     mdi:air-humidifier
   {% else %}
     mdi:water-percent
   {% endif %}
 color: |-
-  {% if state_attr(entity, 'error_active') %}
+  {% if states(entity) in ['unavailable', 'unknown'] %}
+    grey
+  {% elif state_attr(entity, 'error_active') %}
     red
   {% elif state_attr(entity, 'boost_active') %}
     purple
   {% elif not state_attr(entity, 'enabled') %}
     orange
   {% elif state_attr(entity, 'manual_off_until') %}
-    grey
+    amber
   {% elif is_state(entity, 'on') %}
     blue
   {% else %}
@@ -170,7 +196,7 @@ tap_action:
   action: toggle
 ```
 
-L'ordre des branches reflète les priorités de l'intégration : erreur > boost (qui ignore la condition d'activation) > désactivé > arrêt manuel > régulation. L'état `on`/`off` de l'entité étant la marche réelle de l'appareil, le `tap_action: toggle` agit comme son bouton physique : arrêt (avec blocage 2 h) s'il tourne, marche forcée sinon.
+L'ordre des branches reflète les priorités de l'intégration : appareil injoignable > erreur > boost (qui ignore la condition d'activation) > désactivé > arrêt manuel > régulation. L'état `on`/`off` de l'entité étant la marche réelle de l'appareil, le `tap_action: toggle` agit comme son bouton physique : arrêt (avec blocage 2 h) s'il tourne, marche forcée sinon.
 
 ## Licence
 

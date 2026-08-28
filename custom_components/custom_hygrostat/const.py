@@ -35,3 +35,15 @@ DEFAULT_STARTUP_DELAY_SECONDS = 120
 
 # Blocage de la régulation après une extinction manuelle de l'appareil
 MANUAL_OFF_HOLD = timedelta(hours=2)
+
+# Délai de tolérance avant de déclarer l'appareil injoignable (entité
+# indisponible) quand son entité passe unknown/unavailable
+DEVICE_OFFLINE_GRACE = timedelta(seconds=60)
+
+# Stabilité exigée avant de LEVER une condition d'erreur ou de réactivation :
+# un capteur qui clignote ne doit pas relancer l'appareil
+TEMPLATE_CLEAR_DELAY = timedelta(seconds=60)
+
+# Capteur d'humidité indisponible depuis ce délai : la dernière valeur connue
+# est abandonnée (et l'appareil coupé s'il n'y a plus aucune mesure)
+SENSOR_STALE_TIMEOUT = timedelta(minutes=30)

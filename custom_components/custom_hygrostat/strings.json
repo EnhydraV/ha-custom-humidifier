@@ -28,7 +28,9 @@
     },
     "error": {
       "humidity_range": "L'humidité minimale doit être inférieure à la maximale.",
-      "invalid_template": "Template invalide."
+      "invalid_template": "Template invalide.",
+      "empty_action": "Les actions d'allumage et d'extinction sont obligatoires : sans elles, l'hygrostat croit piloter un appareil sans rien lui envoyer.",
+      "self_reference": "Une action cible l'hygrostat lui-même : elle doit piloter l'appareil, pas l'entité qui le régule."
     },
     "abort": {
       "already_configured": "Un hygrostat porte déjà ce nom."
@@ -61,7 +63,9 @@
     },
     "error": {
       "humidity_range": "L'humidité minimale doit être inférieure à la maximale.",
-      "invalid_template": "Template invalide."
+      "invalid_template": "Template invalide.",
+      "empty_action": "Les actions d'allumage et d'extinction sont obligatoires : sans elles, l'hygrostat croit piloter un appareil sans rien lui envoyer.",
+      "self_reference": "Une action cible l'hygrostat lui-même : elle doit piloter l'appareil, pas l'entité qui le régule."
     }
   }
 }

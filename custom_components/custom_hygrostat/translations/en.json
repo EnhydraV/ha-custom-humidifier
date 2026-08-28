@@ -28,7 +28,9 @@
     },
     "error": {
       "humidity_range": "Minimum humidity must be lower than maximum.",
-      "invalid_template": "Invalid template."
+      "invalid_template": "Invalid template.",
+      "empty_action": "Turn-on and turn-off actions are required: without them the hygrostat believes it drives a device while sending nothing.",
+      "self_reference": "An action targets the hygrostat itself: it must drive the device, not the entity regulating it."
     },
     "abort": {
       "already_configured": "A hygrostat with this name already exists."
@@ -61,7 +63,9 @@
     },
     "error": {
       "humidity_range": "Minimum humidity must be lower than maximum.",
-      "invalid_template": "Invalid template."
+      "invalid_template": "Invalid template.",
+      "empty_action": "Turn-on and turn-off actions are required: without them the hygrostat believes it drives a device while sending nothing.",
+      "self_reference": "An action targets the hygrostat itself: it must drive the device, not the entity regulating it."
     }
   }
 }

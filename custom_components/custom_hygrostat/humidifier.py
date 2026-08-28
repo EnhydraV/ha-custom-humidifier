@@ -15,7 +15,7 @@ from homeassistant.const import (
     STATE_UNAVAILABLE,
     STATE_UNKNOWN,
 )
-from homeassistant.core import CoreState, HomeAssistant, callback
+from homeassistant.core import Context, CoreState, HomeAssistant, callback
 from homeassistant.exceptions import TemplateError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import (
@@ -54,6 +54,9 @@ from .const import (
     DEFAULT_BOOST_HUMIDITY,
     DEFAULT_MIN_CYCLE_MINUTES,
     DEFAULT_STARTUP_DELAY_SECONDS,
+    DEVICE_OFFLINE_GRACE,
+    TEMPLATE_CLEAR_DELAY,
+    SENSOR_STALE_TIMEOUT,
     MANUAL_OFF_HOLD,
 )
 
@@ -171,6 +174,12 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         self._manual_hold_remove = None
         self._startup_grace_until = None
         self._startup_grace_remove = None
+        # Appareil injoignable (confirmé après DEVICE_OFFLINE_GRACE)
+        self._device_offline = False
+        self._device_offline_remove = None
+        # Temporisations de levée des conditions d'erreur / d'activation
+        self._template_clear_remove = {}
+        self._sensor_stale_remove = None
         self._enable_template = enable_template
         self._error_template = error_template
         self._enable_ok = True
@@ -181,6 +190,9 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
 
         self.async_on_remove(self._clear_manual_hold)
         self.async_on_remove(self._clear_startup_grace)
+        self.async_on_remove(self._clear_device_offline)
+        self.async_on_remove(self._cancel_template_clears)
+        self.async_on_remove(self._clear_sensor_watchdog)
 
         self.async_on_remove(
             async_track_state_change_event(
@@ -256,6 +268,8 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
                 self._update_secondary(device_state)
                 if device_state and device_state.state in ("on", "off"):
                     self._active = device_state.state == "on"
+                else:
+                    self._arm_device_offline()
             if self._boost_timer_entity_id:
                 # Le timer restauré par HA fait foi, pas le mode restauré
                 timer_state = self.hass.states.get(self._boost_timer_entity_id)
@@ -285,9 +299,30 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             )
 
     @property
+    def available(self):
+        # Un appareil qui ne répond plus ne doit pas afficher un état de
+        # marche inventé : l'entité devient indisponible, comme la source
+        return not self._device_offline
+
+    @property
     def is_on(self):
         # L'état de l'entité reflète la marche réelle de l'appareil
         return self._active
+
+    @property
+    def _device_state(self):
+        """État réel de l'appareil : True/False, None si inconnu."""
+        if not self._device_entity_id:
+            return None
+        state = self.hass.states.get(self._device_entity_id)
+        if state is None or state.state not in ("on", "off"):
+            return None
+        return state.state == "on"
+
+    @property
+    def _device_reachable(self):
+        """Faux si l'appareil est configuré mais ne publie plus d'état."""
+        return not self._device_entity_id or self._device_state is not None
 
     @property
     def icon(self):
@@ -338,7 +373,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         self._attr_mode = self.MODE_NORMAL
         if not was_boost and self._active:
             self._set_manual_hold()
-        await self._async_device_turn_off()
+        await self._async_device_turn_off(force=True)
         self.async_write_ha_state()
 
     async def async_set_humidity(self, humidity):
@@ -382,50 +417,98 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
 
     @callback
     def _async_templates_changed(self, event, updates):
-        was_error = self._error
-        was_enabled = self._enabled
         for update in updates:
             result = update.result
             if isinstance(result, TemplateError):
                 # En erreur de rendu, on conserve le dernier état connu
                 _LOGGER.warning("Template en erreur : %s", result)
                 continue
+            value = result_as_boolean(result)
             if update.template is self._enable_template:
-                self._enable_ok = result_as_boolean(result)
+                self._apply_enable(value)
             elif update.template is self._error_template:
-                self._error = result_as_boolean(result)
-        if self._error and not was_error:
+                self._apply_error(value)
+
+    @callback
+    def _apply_error(self, value):
+        # Sens restrictif immédiat, sens permissif temporisé : un capteur qui
+        # clignote (appareil qui se reconnecte) ne doit pas relancer la machine
+        if value:
+            self._cancel_template_clear("error")
+            if self._error:
+                return
+            self._error = True
             # Une erreur coupe tout, boost compris
             self.hass.async_create_task(self._async_interlock_off())
             return
-        if self._enabled == was_enabled:
-            # L'autorisation n'a pas bougé, mais l'icône
-            # ou les attributs peuvent avoir changé
-            self.async_write_ha_state()
-            return
-        if self._attr_mode == self.MODE_BOOST:
-            # Le boost ignore la condition d'activation
-            self.async_write_ha_state()
-            return
-        if self._enabled:
-            self.hass.async_create_task(self._async_resume())
-        else:
+        if self._error:
+            self._schedule_template_clear("error")
+
+    @callback
+    def _apply_enable(self, value):
+        if not value:
+            self._cancel_template_clear("enable")
+            if not self._enable_ok:
+                return
+            self._enable_ok = False
+            if self._attr_mode == self.MODE_BOOST:
+                # Le boost ignore la condition d'activation
+                self.async_write_ha_state()
+                return
             self.hass.async_create_task(self._async_suspend())
+            return
+        if not self._enable_ok:
+            self._schedule_template_clear("enable")
+
+    @callback
+    def _schedule_template_clear(self, key):
+        """Lève une condition bloquante seulement si elle reste stable."""
+        if key in self._template_clear_remove:
+            return
+
+        @callback
+        def _clear(_now):
+            self._template_clear_remove.pop(key, None)
+            if key == "error":
+                self._error = False
+            else:
+                self._enable_ok = True
+            if self._enabled and self._attr_mode != self.MODE_BOOST:
+                self.hass.async_create_task(self._async_resume())
+            else:
+                self.async_write_ha_state()
+
+        self._template_clear_remove[key] = async_call_later(
+            self.hass, TEMPLATE_CLEAR_DELAY.total_seconds(), _clear
+        )
+
+    @callback
+    def _cancel_template_clear(self, key):
+        if (remove := self._template_clear_remove.pop(key, None)) is not None:
+            remove()
+
+    @callback
+    def _cancel_template_clears(self):
+        for remove in self._template_clear_remove.values():
+            remove()
+        self._template_clear_remove.clear()
 
     async def _async_resume(self):
-        await self._async_control(force=True)
+        # Pas de force ici : une reprise ne doit pas court-circuiter le cycle
+        # minimum, sous peine de rallumages en rafale quand un capteur clignote
+        await self._async_control()
         self.async_write_ha_state()
 
     async def _async_suspend(self):
         # Activation false en mode normal : appareil coupé, régulation suspendue
-        await self._async_device_turn_off()
+        await self._async_device_turn_off(force=True)
         self.async_write_ha_state()
 
     async def _async_interlock_off(self):
         # Coupure prioritaire (erreur) : annule aussi un boost en cours
         await self._async_cancel_boost_timer()
         self._attr_mode = self.MODE_NORMAL
-        await self._async_device_turn_off()
+        await self._async_device_turn_off(force=True)
         self.async_write_ha_state()
 
     # ----- Boost (marche forcée) -----
@@ -469,7 +552,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         self._attr_mode = self.MODE_NORMAL
         if not self._enabled:
             # Régulation suspendue : l'appareil ne doit pas rester en marche
-            await self._async_device_turn_off()
+            await self._async_device_turn_off(force=True)
         else:
             await self._async_control(force=True)
 
@@ -498,24 +581,74 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
     @callback
     def _async_device_changed(self, event):
         new_state = event.data.get("new_state")
+        old_state = event.data.get("old_state")
         # Humidité du capteur interne, à chaque changement (état ou attributs)
+        before = (self._cur_humidity, self._secondary_humidity)
         self._update_secondary(new_state)
+        changed = before != (self._cur_humidity, self._secondary_humidity)
+
+        if new_state is None or new_state.state not in ("on", "off"):
+            # L'appareil ne publie plus d'état exploitable : on ne pilote plus
+            # rien, et on le déclare injoignable s'il ne revient pas
+            self._arm_device_offline()
+            if changed:
+                self.async_write_ha_state()
+            return
+
+        was_offline = (
+            self._device_offline or self._device_offline_remove is not None
+        )
+        self._clear_device_offline()
+
         # Détection de la marche/arrêt manuel
-        if (
-            new_state is not None
-            and new_state.state in ("on", "off")
-            and (is_on := new_state.state == "on") != self._active
-        ):
-            if self._in_startup_grace:
-                # L'état qui se réhydrate au redémarrage n'est pas une action
-                # manuelle : resynchronisation silencieuse, ni boost ni blocage
+        if (is_on := new_state.state == "on") != self._active:
+            if (
+                self._in_startup_grace
+                or was_offline
+                or old_state is None
+                or old_state.state not in ("on", "off")
+            ):
+                # État qui se réhydrate (redémarrage, appareil qui reconnecte
+                # après unknown/unavailable) : ce n'est pas un geste humain.
+                # Resynchronisation silencieuse, ni boost ni blocage 2 h.
                 self._active = is_on
                 self.async_write_ha_state()
+                if not self._in_startup_grace:
+                    self.hass.async_create_task(self._async_control())
                 return
             self.hass.async_create_task(self._async_handle_manual_switch(is_on))
             return
+        if changed or was_offline:
+            self.async_write_ha_state()
         self.hass.async_create_task(self._async_control())
-        self.async_write_ha_state()
+
+    # ----- Appareil injoignable -----
+
+    @callback
+    def _arm_device_offline(self):
+        if self._device_offline or self._device_offline_remove is not None:
+            return
+
+        @callback
+        def _offline(_now):
+            self._device_offline_remove = None
+            self._device_offline = True
+            _LOGGER.warning(
+                "%s ne répond plus : hygrostat marqué indisponible",
+                self._device_entity_id,
+            )
+            self.async_write_ha_state()
+
+        self._device_offline_remove = async_call_later(
+            self.hass, DEVICE_OFFLINE_GRACE.total_seconds(), _offline
+        )
+
+    @callback
+    def _clear_device_offline(self):
+        if self._device_offline_remove is not None:
+            self._device_offline_remove()
+            self._device_offline_remove = None
+        self._device_offline = False
 
     async def _async_handle_manual_switch(self, is_on):
         # L'appareil a changé d'état sans qu'on l'ait commandé
@@ -525,7 +658,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             if self._error:
                 # Erreur active (réservoir plein...) : on refuse la marche
                 _LOGGER.warning("Allumage manuel refusé : condition d'erreur active")
-                await self._async_device_turn_off()
+                await self._async_device_turn_off(force=True)
                 self.async_write_ha_state()
                 return
             # Un rallumage manuel lève le blocage post-extinction
@@ -631,10 +764,43 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
     def _async_sensor_changed(self, event):
         new_state = event.data.get("new_state")
         if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            # On conserve la dernière valeur connue, mais pas éternellement
+            self._arm_sensor_watchdog()
             return
+        self._clear_sensor_watchdog()
         self._update_humidity(new_state.state)
         self.hass.async_create_task(self._async_control())
         self.async_write_ha_state()
+
+    @callback
+    def _arm_sensor_watchdog(self):
+        if self._sensor_stale_remove is not None:
+            return
+
+        @callback
+        def _stale(_now):
+            self._sensor_stale_remove = None
+            _LOGGER.warning(
+                "%s indisponible depuis %s : dernière mesure abandonnée",
+                self._sensor_entity_id,
+                SENSOR_STALE_TIMEOUT,
+            )
+            self._primary_humidity = None
+            self._recompute_humidity()
+            if self._active and self._cur_humidity is None:
+                # Plus aucune mesure : on ne laisse pas l'appareil tourner en aveugle
+                self.hass.async_create_task(self._async_device_turn_off(force=True))
+            self.async_write_ha_state()
+
+        self._sensor_stale_remove = async_call_later(
+            self.hass, SENSOR_STALE_TIMEOUT.total_seconds(), _stale
+        )
+
+    @callback
+    def _clear_sensor_watchdog(self):
+        if self._sensor_stale_remove is not None:
+            self._sensor_stale_remove()
+            self._sensor_stale_remove = None
 
     @callback
     def _update_humidity(self, state):
@@ -677,6 +843,9 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
     async def _async_control(self, force=False):
         if self._error:
             return
+        if self._device_offline:
+            # Appareil injoignable : rien à piloter, et surtout rien à prétendre
+            return
         # Le boost ignore la condition d'activation, pas l'erreur
         if not self._enable_ok and self._attr_mode != self.MODE_BOOST:
             return
@@ -713,18 +882,47 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
     async def _async_device_turn_on(self):
         if self._active:
             return
+        if not self._device_reachable:
+            # Sans appareil joignable, l'action partirait dans le vide et
+            # l'entité afficherait une marche imaginaire
+            _LOGGER.warning(
+                "Allumage ignoré : %s ne répond pas", self._device_entity_id
+            )
+            return
         # Croyance mise à jour AVANT l'action : l'événement de l'entité d'état
         # déclenché par nos propres actions ne doit pas passer pour manuel
         self._active = True
         self._last_switched = dt_util.utcnow()
         # _active porte l'état on/off de l'entité : publication immédiate
         self.async_write_ha_state()
-        await self._action_on.async_run(context=self._context)
+        if not await self._async_run_action(self._action_on):
+            self._active = False
+            self.async_write_ha_state()
 
-    async def _async_device_turn_off(self):
-        if not self._active:
+    async def _async_device_turn_off(self, force=False):
+        # force : coupure de sécurité (erreur, suspension, arrêt manuel), à
+        # envoyer même si on se croit déjà à l'arrêt alors que l'appareil tourne
+        if not self._active and not (force and self._device_state):
             return
+        if not self._device_reachable:
+            _LOGGER.warning(
+                "Extinction ignorée : %s ne répond pas", self._device_entity_id
+            )
+            return
+        was_active = self._active
         self._active = False
         self._last_switched = dt_util.utcnow()
         self.async_write_ha_state()
-        await self._action_off.async_run(context=self._context)
+        if not await self._async_run_action(self._action_off):
+            self._active = was_active
+            self.async_write_ha_state()
+
+    async def _async_run_action(self, script):
+        """Exécute une séquence d'actions ; renvoie False si elle a échoué."""
+        try:
+            # Sans contexte, HA émet un avertissement et perd la traçabilité
+            await script.async_run(context=self._context or Context())
+        except Exception:  # noqa: BLE001 - séquence utilisateur, tout est possible
+            _LOGGER.exception("Échec de la séquence d'actions")
+            return False
+        return True

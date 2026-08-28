@@ -12,8 +12,9 @@ from homeassistant.config_entries import (
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import TemplateError
-from homeassistant.helpers import selector
+from homeassistant.helpers import entity_registry as er, selector
 from homeassistant.helpers.template import Template
+from homeassistant.util import slugify
 
 from .const import (
     DOMAIN,
@@ -170,11 +171,51 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
     )
 
 
-def _validate(hass: HomeAssistant, user_input: dict[str, Any]) -> dict[str, str]:
+def _own_entity_ids(
+    hass: HomeAssistant, user_input: dict[str, Any], entry: ConfigEntry | None
+) -> set[str]:
+    """Entity ids de l'hygrostat lui-même, pour détecter l'auto-référence."""
+    ids = {f"humidifier.{slugify(user_input.get(CONF_NAME) or '')}"}
+    if entry is not None:
+        registry = er.async_get(hass)
+        ids.update(
+            entity.entity_id
+            for entity in er.async_entries_for_config_entry(registry, entry.entry_id)
+        )
+    return {eid for eid in ids if eid and not eid.endswith(".")}
+
+
+def _referenced_strings(node: Any) -> set[str]:
+    """Toutes les chaînes d'une séquence d'actions, pour comparaison exacte."""
+    if isinstance(node, str):
+        return {node}
+    if isinstance(node, dict):
+        return set().union(*(_referenced_strings(v) for v in node.values())) if node else set()
+    if isinstance(node, (list, tuple)):
+        return set().union(*(_referenced_strings(v) for v in node)) if node else set()
+    return set()
+
+
+def _validate(
+    hass: HomeAssistant,
+    user_input: dict[str, Any],
+    entry: ConfigEntry | None = None,
+) -> dict[str, str]:
     """Validate user input shared by config and options flows."""
     errors: dict[str, str] = {}
     if user_input[CONF_MIN_HUMIDITY] >= user_input[CONF_MAX_HUMIDITY]:
         errors["base"] = "humidity_range"
+    own_ids = _own_entity_ids(hass, user_input, entry)
+    for conf in (CONF_ACTION_ON, CONF_ACTION_OFF):
+        actions = user_input.get(conf)
+        if not actions:
+            # Une séquence vide laisse l'hygrostat croire qu'il pilote quelque
+            # chose alors qu'il n'envoie rien
+            errors[conf] = "empty_action"
+            continue
+        if own_ids & _referenced_strings(actions):
+            # Une action qui cible l'hygrostat lui-même reboucle sur lui
+            errors[conf] = "self_reference"
     for conf in (CONF_ENABLE_TEMPLATE, CONF_ERROR_TEMPLATE):
         if tpl := user_input.get(conf):
             try:
@@ -232,7 +273,7 @@ class CustomHygrostatOptionsFlow(OptionsFlow):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            errors = _validate(self.hass, user_input)
+            errors = _validate(self.hass, user_input, self.config_entry)
             if not errors:
                 for conf in (CONF_TARGET_ENTITY, CONF_BOOST_TIMER, CONF_DEVICE_ENTITY):
                     user_input.setdefault(conf, None)
