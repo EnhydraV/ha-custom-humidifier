@@ -660,6 +660,56 @@ RUNNING`) n'arme AUCUNE attente d'entrees, contrairement au chemin
 l'incident (`startup_grace_until` etait vide). La restauration de la consigne
 couvre le symptome ; la cause exacte de la course n'a pas ete identifiee.
 
+### Puissance de ventilation par template (2026-08-29)
+
+Deux champs optionnels : `fan_entity` (domaine `fan`) et `fan_speed_template`
+(`CONF_FAN_ENTITY`, `CONF_FAN_SPEED_TEMPLATE`, `DEFAULT_FAN_SPEED` = 50). Le
+template rejoint les deux autres dans le `async_track_template_result` existant ;
+le dispatch de `_async_templates_changed` le traite AVANT le
+`result_as_boolean` puisque c'est le seul a rendre un nombre.
+
+`_apply_fan_speed` : repli sur 50 avec avertissement si le rendu est illisible ou
+hors de `0 < x <= 100`. Zero est refuse volontairement -- sur ces appareils,
+couper le ventilateur coupe aussi la deshumidification (constate par
+l'utilisateur). Si la machine tourne deja, la nouvelle valeur est poussee
+immediatement (`_async_push_fan_speed`), sinon elle le sera a l'allumage, juste
+apres la sequence d'actions et seulement si celle-ci a reussi.
+
+C'est LA raison d'etre du champ : un template ecrit directement dans la sequence
+d'allumage (les scripts HA acceptent le templating) ne serait evalue qu'au
+demarrage du cycle, jamais reapplique en cours de marche.
+
+Le config flow refuse un template de vitesse sans entite ventilateur
+(`fan_entity_required`). Attribut expose : `fan_speed`.
+
+A FAIRE cote instance quand le champ sera renseigne : retirer le
+`fan.set_percentage` des actions d'allumage des 4 entries, l'integration
+l'ecrasant de toute facon. Rappel materiel : les DryFy n'ont que deux vitesses
+(`percentage_step: 50`), seuls 50 et 100 ont un effet distinct.
+
+### Ecart sur la consigne par template (2026-08-29)
+
+Champ optionnel `target_offset_template` (`CONF_TARGET_OFFSET_TEMPLATE`,
+`DEFAULT_TARGET_OFFSET` = 0), rendant un nombre SIGNE ajoute a la consigne
+normale. Cas d'usage local : les 4 hygrostats partagent
+`sensor.consigne_deshumidificateurs`, l'ecart permet de decliner piece par piece
+sans multiplier les entites de consigne.
+
+- `target_humidity` renvoie desormais `_offset_target(self._target_humidity)`,
+  soit la base plus l'ecart, bornee a min/max. Le mode `boost` n'est PAS
+  concerne : sa consigne est deja un choix explicite.
+- `async_set_humidity` retranche l'ecart avant d'ecrire (entite de consigne ou
+  valeur interne) : l'utilisateur regle la consigne EFFECTIVE, pas la base.
+- `normal_humidity` reste la consigne de BASE, sans ecart -- c'est bien elle
+  qu'il faut restaurer au redemarrage, l'ecart etant recalcule par le template.
+- Repli sur 0 avec avertissement si le rendu est illisible. Aucune borne sur le
+  signe ni sur l'amplitude : seule la consigne finale est bornee.
+- Un changement d'ecart declenche `_async_control()` (non force).
+
+Le dispatch de `_async_templates_changed` compte maintenant DEUX templates
+numeriques (vitesse de ventilation, ecart de consigne), traites avant le
+`result_as_boolean` des deux templates booleens.
+
 ### Reste a faire
 
 - `min_cycle_duration` est a 5 min sur les 4 entries (il etait a 0). Consequence

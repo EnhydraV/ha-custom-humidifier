@@ -27,6 +27,7 @@ Tout se configure via l'interface (config flow + options flow). L'intégration e
 | Actions à l'extinction | Séquence exécutée quand il doit s'arrêter (obligatoire, non vide) |
 | Humidité cible | Consigne d'humidité (%) |
 | Entité de consigne | `input_number`, `number` ou `sensor` optionnel qui pilote la consigne |
+| Écart sur la consigne | Template optionnel rendant un nombre signé, ajouté à la consigne normale (défaut 0) |
 | Tolérance humide | Démarrage quand humidité ≥ cible + tolérance humide |
 | Tolérance sèche | Arrêt quand humidité ≤ cible − tolérance sèche |
 | Humidité min / max | Bornes réglables de la consigne |
@@ -36,6 +37,8 @@ Tout se configure via l'interface (config flow + options flow). L'intégration e
 | Consigne en marche forcée | Consigne appliquée pendant le mode `boost` (défaut 50 %) |
 | Entité déshumidificateur | Entité `humidifier` optionnelle du fabricant : capteur interne (moyenné) + détection manuelle |
 | Prise d'alimentation | `switch` ou `input_boolean` optionnel : coupure de courant automatique quand l'appareil ne répond plus |
+| Ventilateur de l'appareil | Entité `fan` optionnelle, cible du réglage de puissance |
+| Puissance de ventilation | Template optionnel rendant un pourcentage (défaut 50) |
 | Condition d'activation | Template optionnel ; `false` = appareil coupé (vide = toujours `true`) |
 | Condition d'erreur | Template optionnel ; `true` = appareil coupé (vide = toujours `false`) |
 
@@ -100,6 +103,22 @@ Si une entité de consigne est configurée, sa valeur (bornée par humidité min
 
 Sans entité de consigne, le comportement reste celui d'origine : consigne interne, réglable sur l'entité et restaurée au redémarrage.
 
+### Écart sur la consigne
+
+Le champ **Écart sur la consigne** prend un template rendant un nombre **signé**, ajouté à la consigne normale. Il sert typiquement à décliner une consigne commune pièce par pièce : plusieurs hygrostats partagent la même entité de consigne, chacun avec son propre écart.
+
+```jinja
+{{ -5 if is_state('binary_sensor.hiver', 'on') else 0 }}
+```
+
+- La consigne effective (`consigne de base + écart`) est **bornée** aux limites min/max réglables, et c'est elle qu'affiche l'attribut standard `humidity` et que suit la régulation.
+- L'attribut `normal_humidity` expose la consigne **de base**, sans écart, celle qui est restaurée au redémarrage et recopiée depuis l'entité de consigne.
+- Régler la consigne depuis l'interface vise la valeur **effective** : l'écart est retranché avant d'écrire dans l'entité de consigne ou dans la valeur interne, pour que le réglage donne bien ce qu'on a demandé.
+- Le **mode `boost` n'est pas concerné** : sa consigne est déjà un choix explicite.
+- Un rendu illisible provoque un repli sur 0 avec un avertissement dans le journal.
+
+Attribut exposé : `target_offset`.
+
 ### Conditions d'activation et d'erreur
 
 Deux templates optionnels, réévalués à chaque changement des entités qu'ils référencent. L'appareil n'est autorisé à tourner que si **activation = `true` ET erreur = `false`** :
@@ -123,6 +142,20 @@ Exemple — condition d'erreur pour couper quand le réservoir est plein, sans a
 ```
 
 Nuance : si le capteur passe `unavailable`, `is_state(..., 'on')` rend `false` → pas d'erreur, l'appareil continue. Pour couper aussi sur capteur indisponible (fail-safe) : `{{ not is_state('binary_sensor.dryfy_cave_nw_reservoir', 'off') }}`.
+
+### Puissance de ventilation
+
+Le champ **Puissance de ventilation** prend un template rendant un pourcentage, appliqué à l'entité `fan` désignée. Il est évalué à chaque allumage **et réappliqué à chaud** dès que son résultat change pendant que l'appareil tourne, ce qu'une valeur figée dans la séquence d'allumage ne permet pas.
+
+```jinja
+{{ 100 if states('sensor.humidite_cave')|float(0) > 75 else 50 }}
+```
+
+Quand ce template est renseigné, **retirez le `fan.set_percentage` de vos actions d'allumage** : l'intégration s'en charge, juste après la séquence, et l'écraserait de toute façon.
+
+Un résultat illisible, nul ou hors de la plage `0 < x <= 100` provoque un repli sur 50 avec un avertissement dans le journal. Zéro est refusé volontairement : sur beaucoup de ces appareils, couper le ventilateur coupe aussi la déshumidification. Pensez aussi aux paliers réels de votre matériel : les DryFy n'ont que deux vitesses (`percentage_step: 50`), donc seuls 50 et 100 ont un effet distinct.
+
+Attribut exposé : `fan_speed`.
 
 ### Quand l'appareil ne répond plus
 

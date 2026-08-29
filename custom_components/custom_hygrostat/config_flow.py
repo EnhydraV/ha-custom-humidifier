@@ -25,6 +25,7 @@ from .const import (
     CONF_MAX_HUMIDITY,
     CONF_TARGET_HUMIDITY,
     CONF_TARGET_ENTITY,
+    CONF_TARGET_OFFSET_TEMPLATE,
     CONF_DRY_TOLERANCE,
     CONF_WET_TOLERANCE,
     CONF_MIN_CYCLE_DURATION,
@@ -33,6 +34,8 @@ from .const import (
     CONF_DEVICE_ENTITY,
     CONF_ENABLE_TEMPLATE,
     CONF_ERROR_TEMPLATE,
+    CONF_FAN_ENTITY,
+    CONF_FAN_SPEED_TEMPLATE,
     CONF_STARTUP_DELAY,
     CONF_POWER_SWITCH,
     DEFAULT_NAME,
@@ -85,6 +88,10 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                     domain=["input_number", "number", "sensor"]
                 )
             ),
+            vol.Optional(
+                CONF_TARGET_OFFSET_TEMPLATE,
+                default=defaults.get(CONF_TARGET_OFFSET_TEMPLATE, ""),
+            ): selector.TemplateSelector(),
             vol.Optional(
                 CONF_DRY_TOLERANCE,
                 default=defaults.get(CONF_DRY_TOLERANCE, DEFAULT_TOLERANCE),
@@ -169,6 +176,16 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                 )
             ),
             vol.Optional(
+                CONF_FAN_ENTITY,
+                description={"suggested_value": defaults.get(CONF_FAN_ENTITY)},
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="fan")
+            ),
+            vol.Optional(
+                CONF_FAN_SPEED_TEMPLATE,
+                default=defaults.get(CONF_FAN_SPEED_TEMPLATE, ""),
+            ): selector.TemplateSelector(),
+            vol.Optional(
                 CONF_ENABLE_TEMPLATE,
                 default=defaults.get(CONF_ENABLE_TEMPLATE, ""),
             ): selector.TemplateSelector(),
@@ -225,7 +242,15 @@ def _validate(
         if own_ids & _referenced_strings(actions):
             # Une action qui cible l'hygrostat lui-même reboucle sur lui
             errors[conf] = "self_reference"
-    for conf in (CONF_ENABLE_TEMPLATE, CONF_ERROR_TEMPLATE):
+    if user_input.get(CONF_FAN_SPEED_TEMPLATE) and not user_input.get(CONF_FAN_ENTITY):
+        # Un template de vitesse sans ventilateur a piloter ne sert a rien
+        errors[CONF_FAN_ENTITY] = "fan_entity_required"
+    for conf in (
+        CONF_ENABLE_TEMPLATE,
+        CONF_ERROR_TEMPLATE,
+        CONF_FAN_SPEED_TEMPLATE,
+        CONF_TARGET_OFFSET_TEMPLATE,
+    ):
         if tpl := user_input.get(conf):
             try:
                 Template(tpl, hass).ensure_valid()
@@ -255,6 +280,7 @@ class CustomHygrostatConfigFlow(ConfigFlow, domain=DOMAIN):
                     CONF_BOOST_TIMER,
                     CONF_DEVICE_ENTITY,
                     CONF_POWER_SWITCH,
+                    CONF_FAN_ENTITY,
                 ):
                     user_input.setdefault(conf, None)
                 await self.async_set_unique_id(
@@ -294,6 +320,7 @@ class CustomHygrostatOptionsFlow(OptionsFlow):
                     CONF_BOOST_TIMER,
                     CONF_DEVICE_ENTITY,
                     CONF_POWER_SWITCH,
+                    CONF_FAN_ENTITY,
                 ):
                     user_input.setdefault(conf, None)
                 return self.async_create_entry(title="", data=user_input)

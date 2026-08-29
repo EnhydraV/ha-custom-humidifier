@@ -39,6 +39,7 @@ from .const import (
     CONF_MAX_HUMIDITY,
     CONF_TARGET_HUMIDITY,
     CONF_TARGET_ENTITY,
+    CONF_TARGET_OFFSET_TEMPLATE,
     CONF_DRY_TOLERANCE,
     CONF_WET_TOLERANCE,
     CONF_MIN_CYCLE_DURATION,
@@ -47,6 +48,8 @@ from .const import (
     CONF_DEVICE_ENTITY,
     CONF_ENABLE_TEMPLATE,
     CONF_ERROR_TEMPLATE,
+    CONF_FAN_ENTITY,
+    CONF_FAN_SPEED_TEMPLATE,
     CONF_STARTUP_DELAY,
     CONF_POWER_SWITCH,
     DEFAULT_TOLERANCE,
@@ -54,6 +57,8 @@ from .const import (
     DEFAULT_MAX_HUMIDITY,
     DEFAULT_TARGET_HUMIDITY,
     DEFAULT_BOOST_HUMIDITY,
+    DEFAULT_FAN_SPEED,
+    DEFAULT_TARGET_OFFSET,
     DEFAULT_MIN_CYCLE_MINUTES,
     DEFAULT_STARTUP_DELAY_SECONDS,
     DEVICE_OFFLINE_GRACE,
@@ -88,6 +93,12 @@ async def async_setup_entry(
     error_template = None
     if tpl := cfg.get(CONF_ERROR_TEMPLATE):
         error_template = Template(tpl, hass)
+    fan_speed_template = None
+    if tpl := cfg.get(CONF_FAN_SPEED_TEMPLATE):
+        fan_speed_template = Template(tpl, hass)
+    target_offset_template = None
+    if tpl := cfg.get(CONF_TARGET_OFFSET_TEMPLATE):
+        target_offset_template = Template(tpl, hass)
 
     async_add_entities(
         [
@@ -111,8 +122,11 @@ async def async_setup_entry(
                 startup_delay_seconds=cfg.get(
                     CONF_STARTUP_DELAY, DEFAULT_STARTUP_DELAY_SECONDS
                 ),
+                fan_entity_id=cfg.get(CONF_FAN_ENTITY),
                 enable_template=enable_template,
                 error_template=error_template,
+                fan_speed_template=fan_speed_template,
+                target_offset_template=target_offset_template,
             )
         ]
     )
@@ -148,8 +162,11 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         device_entity_id,
         power_switch_entity_id,
         startup_delay_seconds,
+        fan_entity_id,
         enable_template,
         error_template,
+        fan_speed_template,
+        target_offset_template,
     ):
         self._attr_unique_id = unique_id
         self._attr_name = name
@@ -167,6 +184,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         self._boost_humidity = boost_humidity
         self._device_entity_id = device_entity_id
         self._power_switch_entity_id = power_switch_entity_id
+        self._fan_entity_id = fan_entity_id
         self._startup_delay = timedelta(seconds=startup_delay_seconds)
 
         self._attr_available_modes = [self.MODE_NORMAL, self.MODE_BOOST]
@@ -197,8 +215,12 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         self._sensor_stale_remove = None
         self._enable_template = enable_template
         self._error_template = error_template
+        self._fan_speed_template = fan_speed_template
+        self._target_offset_template = target_offset_template
         self._enable_ok = True
         self._error = False
+        self._fan_speed = DEFAULT_FAN_SPEED
+        self._target_offset = DEFAULT_TARGET_OFFSET
 
     async def async_added_to_hass(self):
         await super().async_added_to_hass()
@@ -243,7 +265,12 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
 
         track_templates = [
             TrackTemplate(tpl, None)
-            for tpl in (self._enable_template, self._error_template)
+            for tpl in (
+                self._enable_template,
+                self._error_template,
+                self._fan_speed_template,
+                self._target_offset_template,
+            )
             if tpl is not None
         ]
         if track_templates:
@@ -367,10 +394,18 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
 
     @property
     def target_humidity(self):
-        # En boost, la consigne forcée remplace la consigne normale
+        # En boost, la consigne forcée remplace la consigne normale : l'écart
+        # ne s'y applique pas, cette consigne-là est déjà un choix explicite
         if self._attr_mode == self.MODE_BOOST:
             return self._boost_humidity
-        return self._target_humidity
+        return self._offset_target(self._target_humidity)
+
+    def _offset_target(self, base):
+        """Consigne de base plus l'écart, bornée aux limites réglables."""
+        return min(
+            max(base + self._target_offset, self._attr_min_humidity),
+            self._attr_max_humidity,
+        )
 
     @property
     def extra_state_attributes(self):
@@ -379,6 +414,8 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             "primary_humidity": self._primary_humidity,
             "secondary_humidity": self._secondary_humidity,
             "boost_active": self._attr_mode == self.MODE_BOOST,
+            "fan_speed": self._fan_speed,
+            "target_offset": self._target_offset,
             # La consigne hors boost : l'attribut standard "humidity" affiche
             # celle du boost quand il est engagé, elle ne peut donc pas servir
             # à restaurer la consigne normale au redémarrage
@@ -413,6 +450,9 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         self.async_write_ha_state()
 
     async def async_set_humidity(self, humidity):
+        # L'utilisateur regle la consigne effective : on retire l'écart pour
+        # retrouver la valeur de base a stocker ou a ecrire dans l'entite
+        humidity -= self._target_offset
         if self._target_entity_id:
             domain = self._target_entity_id.split(".")[0]
             if domain in ("input_number", "number"):
@@ -459,6 +499,13 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
                 # En erreur de rendu, on conserve le dernier état connu
                 _LOGGER.warning("Template en erreur : %s", result)
                 continue
+            if update.template is self._fan_speed_template:
+                # Templates rendant un nombre, pas un booleen
+                self._apply_fan_speed(result)
+                continue
+            if update.template is self._target_offset_template:
+                self._apply_target_offset(result)
+                continue
             value = result_as_boolean(result)
             if update.template is self._enable_template:
                 self._apply_enable(value)
@@ -466,6 +513,69 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             elif update.template is self._error_template:
                 self._apply_error(value)
                 self._input_ready("error")
+
+    @callback
+    def _apply_fan_speed(self, result):
+        """Vitesse de ventilation decidee par template, appliquee a chaud."""
+        try:
+            speed = float(result)
+        except (ValueError, TypeError):
+            _LOGGER.warning(
+                "Vitesse de ventilation illisible (%s), repli sur %s %%",
+                result,
+                DEFAULT_FAN_SPEED,
+            )
+            speed = DEFAULT_FAN_SPEED
+        if not 0 < speed <= 100:
+            # 0 arreterait l'appareil : sur ces machines, couper le
+            # ventilateur coupe aussi la deshumidification
+            _LOGGER.warning(
+                "Vitesse de ventilation hors bornes (%s), repli sur %s %%",
+                speed,
+                DEFAULT_FAN_SPEED,
+            )
+            speed = DEFAULT_FAN_SPEED
+        if speed == self._fan_speed:
+            return
+        self._fan_speed = speed
+        # Applique tout de suite si la machine tourne, sinon a l'allumage
+        if self._active:
+            self.hass.async_create_task(self._async_push_fan_speed())
+        self.async_write_ha_state()
+
+    async def _async_push_fan_speed(self):
+        if not self._fan_entity_id:
+            return
+        try:
+            await self.hass.services.async_call(
+                "fan",
+                "set_percentage",
+                {"entity_id": self._fan_entity_id, "percentage": self._fan_speed},
+                blocking=True,
+                context=self._context,
+            )
+        except Exception:  # noqa: BLE001 - l'appareil peut etre injoignable
+            _LOGGER.warning(
+                "Vitesse de ventilation non appliquee sur %s", self._fan_entity_id
+            )
+
+    @callback
+    def _apply_target_offset(self, result):
+        """Ecart applique a la consigne normale, positif comme negatif."""
+        try:
+            offset = float(result)
+        except (ValueError, TypeError):
+            _LOGGER.warning(
+                "Écart de consigne illisible (%s), repli sur %s",
+                result,
+                DEFAULT_TARGET_OFFSET,
+            )
+            offset = DEFAULT_TARGET_OFFSET
+        if offset == self._target_offset:
+            return
+        self._target_offset = offset
+        self.hass.async_create_task(self._async_control())
+        self.async_write_ha_state()
 
     @callback
     def _apply_error(self, value):
@@ -1061,6 +1171,11 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         if not await self._async_run_action(self._action_on):
             self._active = False
             self.async_write_ha_state()
+            return
+        # La sequence d'allumage n'a plus a fixer la vitesse : c'est le
+        # template qui decide, et il peut avoir change depuis le dernier cycle
+        if self._fan_speed_template is not None:
+            await self._async_push_fan_speed()
 
     async def _async_device_turn_off(self, force=False):
         # force : coupure de sécurité (erreur, suspension, arrêt manuel), à

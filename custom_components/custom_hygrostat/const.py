@@ -11,6 +11,8 @@ CONF_MIN_HUMIDITY = "min_humidity"
 CONF_MAX_HUMIDITY = "max_humidity"
 CONF_TARGET_HUMIDITY = "target_humidity"
 CONF_TARGET_ENTITY = "target_entity"
+# Ecart applique a la consigne normale (template rendant un nombre signe)
+CONF_TARGET_OFFSET_TEMPLATE = "target_offset_template"
 CONF_DRY_TOLERANCE = "dry_tolerance"
 CONF_WET_TOLERANCE = "wet_tolerance"
 CONF_MIN_CYCLE_DURATION = "min_cycle_duration"
@@ -20,6 +22,9 @@ CONF_BOOST_HUMIDITY = "boost_humidity"
 # Entité humidifier du fabricant : capteur interne + détection manuelle
 CONF_DEVICE_ENTITY = "device_entity"
 CONF_ENABLE_TEMPLATE = "enable_template"
+# Ventilateur de l'appareil et template decidant sa puissance (en %)
+CONF_FAN_ENTITY = "fan_entity"
+CONF_FAN_SPEED_TEMPLATE = "fan_speed_template"
 CONF_ERROR_TEMPLATE = "error_template"
 # Période de grâce au démarrage de HA avant de piloter l'appareil (secondes)
 CONF_STARTUP_DELAY = "startup_delay"
@@ -34,6 +39,8 @@ DEFAULT_MIN_HUMIDITY = 30
 DEFAULT_MAX_HUMIDITY = 99
 DEFAULT_TARGET_HUMIDITY = 55
 DEFAULT_BOOST_HUMIDITY = 50
+DEFAULT_FAN_SPEED = 50
+DEFAULT_TARGET_OFFSET = 0
 DEFAULT_MIN_CYCLE_MINUTES = 0
 DEFAULT_STARTUP_DELAY_SECONDS = 120
 

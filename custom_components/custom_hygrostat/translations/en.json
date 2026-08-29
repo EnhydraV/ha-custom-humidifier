@@ -23,7 +23,10 @@
           "boost_timer": "Boost timer (timer entity, active = boost)",
           "boost_humidity": "Boost target humidity",
           "device_entity": "Dehumidifier entity (optional: internal sensor + manual detection)",
-          "power_switch": "Power switch (optional: power-cycles the device when it stops responding)"
+          "power_switch": "Power switch (optional: power-cycles the device when it stops responding)",
+          "fan_entity": "Device fan (optional, to drive the speed)",
+          "fan_speed_template": "Fan speed (template returning a %, default 50)",
+          "target_offset_template": "Setpoint offset (template returning a signed number, e.g. -5; default 0)"
         }
       }
     },
@@ -31,7 +34,8 @@
       "humidity_range": "Minimum humidity must be lower than maximum.",
       "invalid_template": "Invalid template.",
       "empty_action": "Turn-on and turn-off actions are required: without them the hygrostat believes it drives a device while sending nothing.",
-      "self_reference": "An action targets the hygrostat itself: it must drive the device, not the entity regulating it."
+      "self_reference": "An action targets the hygrostat itself: it must drive the device, not the entity regulating it.",
+      "fan_entity_required": "A fan speed template requires selecting the fan entity."
     },
     "abort": {
       "already_configured": "A hygrostat with this name already exists."
@@ -59,7 +63,10 @@
           "boost_timer": "Boost timer (timer entity, active = boost)",
           "boost_humidity": "Boost target humidity",
           "device_entity": "Dehumidifier entity (optional: internal sensor + manual detection)",
-          "power_switch": "Power switch (optional: power-cycles the device when it stops responding)"
+          "power_switch": "Power switch (optional: power-cycles the device when it stops responding)",
+          "fan_entity": "Device fan (optional, to drive the speed)",
+          "fan_speed_template": "Fan speed (template returning a %, default 50)",
+          "target_offset_template": "Setpoint offset (template returning a signed number, e.g. -5; default 0)"
         }
       }
     },
@@ -67,7 +74,8 @@
       "humidity_range": "Minimum humidity must be lower than maximum.",
       "invalid_template": "Invalid template.",
       "empty_action": "Turn-on and turn-off actions are required: without them the hygrostat believes it drives a device while sending nothing.",
-      "self_reference": "An action targets the hygrostat itself: it must drive the device, not the entity regulating it."
+      "self_reference": "An action targets the hygrostat itself: it must drive the device, not the entity regulating it.",
+      "fan_entity_required": "A fan speed template requires selecting the fan entity."
     }
   }
 }
