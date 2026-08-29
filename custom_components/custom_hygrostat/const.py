@@ -9,10 +9,10 @@ CONF_ACTION_ON = "turn_on_action"
 CONF_ACTION_OFF = "turn_off_action"
 CONF_MIN_HUMIDITY = "min_humidity"
 CONF_MAX_HUMIDITY = "max_humidity"
-CONF_TARGET_HUMIDITY = "target_humidity"
-CONF_TARGET_ENTITY = "target_entity"
-# Ecart applique a la consigne normale (template rendant un nombre signe)
-CONF_TARGET_OFFSET_TEMPLATE = "target_offset_template"
+# Consigne normale : un template, seule source de verite. Une valeur fixe
+# s'ecrit "{{ 55 }}", une consigne partagee "{{ states('sensor.x')|float }}",
+# et un ecart par piece se met dans le meme template.
+CONF_TARGET_TEMPLATE = "target_template"
 CONF_DRY_TOLERANCE = "dry_tolerance"
 CONF_WET_TOLERANCE = "wet_tolerance"
 CONF_MIN_CYCLE_DURATION = "min_cycle_duration"
@@ -40,7 +40,6 @@ DEFAULT_MAX_HUMIDITY = 99
 DEFAULT_TARGET_HUMIDITY = 55
 DEFAULT_BOOST_HUMIDITY = 50
 DEFAULT_FAN_SPEED = 50
-DEFAULT_TARGET_OFFSET = 0
 DEFAULT_MIN_CYCLE_MINUTES = 0
 DEFAULT_STARTUP_DELAY_SECONDS = 120
 

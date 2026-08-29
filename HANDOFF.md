@@ -710,6 +710,42 @@ Le dispatch de `_async_templates_changed` compte maintenant DEUX templates
 numeriques (vitesse de ventilation, ecart de consigne), traites avant le
 `result_as_boolean` des deux templates booleens.
 
+### Consigne unifiee en un seul template (2026-08-29, VERSION 2)
+
+Sur demande de l'utilisateur, les TROIS champs de consigne (`target_humidity`
+fixe, `target_entity`, `target_offset_template`) sont remplaces par un unique
+`target_template` (`CONF_TARGET_TEMPLATE`), obligatoire. Argument decisif : une
+valeur en dur s'ecrit `{{ 55 }}`, donc la consigne manuelle n'apporte rien. Le
+formulaire passe de 21 a 19 champs et ~27 lignes de code enchevetrees
+disparaissent (`_offset_target`, `_apply_target_offset`, `_update_target`,
+`_async_target_changed`, la soustraction inverse dans `async_set_humidity`, le
+double bornage).
+
+Gain de robustesse, et c'est le vrai motif : `async_track_template_result` suit
+les entites REFERENCEES et re-rend des qu'elles apparaissent. L'incident du
+matin (entite de consigne lue une seule fois au demarrage, jamais relue ensuite
+puisque sa valeur ne changeait plus) devient structurellement impossible.
+
+REGLE A CONNAITRE, contre-intuitive : dans le template, il ne faut PAS mettre de
+valeur par defaut au filtre `float`. Sans defaut, une source illisible leve une
+erreur de rendu -> `_async_templates_changed` journalise et CONSERVE la derniere
+consigne. Avec `|float(55)`, le rendu reussit et la regulation bascule
+silencieusement sur 55, ce qui est exactement le bug qu'on vient de corriger.
+C'est pour ca que la migration genere `states('x')|float` sans defaut.
+
+`async_set_humidity` ne fait plus que journaliser un avertissement : la consigne
+est calculee. Pour la rendre reglable, pointer le template sur un `input_number`.
+`normal_humidity` est conserve (l'attribut standard `humidity` publie la consigne
+du BOOST quand il est engage, il ne peut donc pas servir a la restauration).
+
+Migration `async_migrate_entry` dans `__init__.py`, v1 -> v2, verifiee sur cinq
+cas : aucun reglage -> `{{ 55 }}` ; fixe 60 -> `{{ 60 }}` ; entite seule ->
+`{{ states('x')|float }}` ; entite + ecart d'une seule expression ->
+`{{ (states('x')|float) + (-5) }}` ; ecart multi-instructions -> consigne migree
+SANS l'ecart, avec un avertissement nommant l'ecart a reporter a la main
+(recomposer du Jinja arbitraire par concatenation produirait un template
+douteux). Les cles v1 sont retirees de `data` ET de `options`.
+
 ### Reste a faire
 
 - `min_cycle_duration` est a 5 min sur les 4 entries (il etait a 0). Consequence

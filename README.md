@@ -25,9 +25,7 @@ Tout se configure via l'interface (config flow + options flow). L'intégration e
 | Capteur d'humidité | `sensor` de classe `humidity` |
 | Actions à l'allumage | Séquence exécutée quand le déshumidificateur doit démarrer (obligatoire, non vide) |
 | Actions à l'extinction | Séquence exécutée quand il doit s'arrêter (obligatoire, non vide) |
-| Humidité cible | Consigne d'humidité (%) |
-| Entité de consigne | `input_number`, `number` ou `sensor` optionnel qui pilote la consigne |
-| Écart sur la consigne | Template optionnel rendant un nombre signé, ajouté à la consigne normale (défaut 0) |
+| Consigne | Template rendant la consigne d'humidité (obligatoire) |
 | Tolérance humide | Démarrage quand humidité ≥ cible + tolérance humide |
 | Tolérance sèche | Arrêt quand humidité ≤ cible − tolérance sèche |
 | Humidité min / max | Bornes réglables de la consigne |
@@ -74,9 +72,9 @@ L'hygrostat pilote l'appareil à l'aveugle via les actions : il ne sait pas ce q
 
 ### Stabilisation au démarrage
 
-Au redémarrage de Home Assistant, les entités se réhydratent dans le désordre. Décider avec une consigne pas encore chargée ou des templates pas encore évalués donne une mauvaise décision, appliquée à un vrai appareil.
+Au redémarrage de Home Assistant, les entités se réhydratent dans le désordre. Décider avec un capteur pas encore chargé ou des templates pas encore évalués donne une mauvaise décision, appliquée à un vrai appareil.
 
-L'hygrostat n'attend donc pas une durée fixe, mais **que chaque entrée configurée ait publié une valeur exploitable** : le capteur d'humidité, l'entité de consigne, l'entité déshumidificateur, et les deux templates. Dès que la dernière est prête, un contrôle forcé applique la décision. En pratique, cela se compte en secondes.
+L'hygrostat n'attend donc pas une durée fixe, mais **que chaque entrée configurée ait publié une valeur exploitable** : le capteur d'humidité, le template de consigne, l'entité déshumidificateur, et les deux templates de conditions. Dès que la dernière est prête, un contrôle forcé applique la décision. En pratique, cela se compte en secondes.
 
 Le champ **Attente maximale au démarrage** (défaut 120 s) n'est qu'un garde-fou : si une entrée ne revient jamais, la régulation reprend quand même à l'échéance, et le journal indique lesquelles manquaient. `0` désactive complètement l'attente.
 
@@ -92,32 +90,28 @@ L'attente ne s'applique qu'à un vrai démarrage de HA, pas au rechargement de l
 
 Ce qui est restauré d'une session à l'autre, c'est la **consigne** et le **mode**, pas l'humidité mesurée : après une coupure longue, la dernière mesure connue peut dater d'heures, et régler un appareil dessus serait exactement ce que le garde-fou du capteur cherche à éviter.
 
-La consigne est restaurée **même lorsqu'une entité de consigne est configurée**, et c'est important : la valeur restaurée est justement la dernière valeur connue de cette entité, puisqu'elle y est recopiée à chaque changement. Si l'entité n'est pas encore lisible au démarrage, la régulation part donc de la dernière consigne réelle plutôt que du défaut de configuration. Sans cela, une entité illisible au mauvais moment ferait réguler sur une valeur que personne n'a choisie, et rien ne la corrigerait tant que l'entité ne changerait pas de valeur. L'attribut `normal_humidity` expose cette consigne hors boost (l'attribut standard `humidity` affiche celle du boost quand il est engagé).
+La consigne restaurée est la dernière valeur rendue par le template, et elle sert tant que celui-ci n'a pas produit de résultat exploitable. Combinée à un `float` sans valeur par défaut (voir « Consigne »), elle garantit qu'une source illisible au démarrage ne fait jamais réguler sur une valeur arbitraire.
 
-### Entité de consigne
+### Consigne
 
-Si une entité de consigne est configurée, sa valeur (bornée par humidité min/max) devient la consigne de l'hygrostat et est suivie en continu :
-
-- **`input_number` / `number`** : synchronisation bidirectionnelle — régler la consigne sur la carte de l'hygrostat écrit dans l'entité, et modifier l'entité met à jour l'hygrostat.
-- **`sensor`** : l'entité commande seule ; le réglage direct sur l'hygrostat est ignoré (warning dans les logs).
-
-Sans entité de consigne, le comportement reste celui d'origine : consigne interne, réglable sur l'entité et restaurée au redémarrage.
-
-### Écart sur la consigne
-
-Le champ **Écart sur la consigne** prend un template rendant un nombre **signé**, ajouté à la consigne normale. Il sert typiquement à décliner une consigne commune pièce par pièce : plusieurs hygrostats partagent la même entité de consigne, chacun avec son propre écart.
+La consigne normale vient d'un **template**, seule source de vérité. Une valeur fixe s'écrit aussi simplement qu'un nombre :
 
 ```jinja
-{{ -5 if is_state('binary_sensor.hiver', 'on') else 0 }}
+{{ 55 }}
 ```
 
-- La consigne effective (`consigne de base + écart`) est **bornée** aux limites min/max réglables, et c'est elle qu'affiche l'attribut standard `humidity` et que suit la régulation.
-- L'attribut `normal_humidity` expose la consigne **de base**, sans écart, celle qui est restaurée au redémarrage et recopiée depuis l'entité de consigne.
-- Régler la consigne depuis l'interface vise la valeur **effective** : l'écart est retranché avant d'écrire dans l'entité de consigne ou dans la valeur interne, pour que le réglage donne bien ce qu'on a demandé.
-- Le **mode `boost` n'est pas concerné** : sa consigne est déjà un choix explicite.
-- Un rendu illisible provoque un repli sur 0 avec un avertissement dans le journal.
+Une consigne partagée entre plusieurs hygrostats, déclinée pièce par pièce :
 
-Attribut exposé : `target_offset`.
+```jinja
+{{ states('sensor.consigne_deshumidificateurs')|float - 5 }}
+```
+
+**N'écrivez pas de valeur par défaut sur le filtre `float`.** Sans défaut, une source illisible provoque une erreur de rendu, et l'hygrostat **conserve sa dernière consigne** au lieu de basculer sur une valeur que personne n'a choisie. Un `|float(55)` ferait exactement l'inverse : il régulerait silencieusement sur 55 dès que la source est indisponible, y compris au démarrage de Home Assistant.
+
+- La valeur rendue est **bornée** aux limites min/max réglables.
+- Le **mode `boost` n'est pas concerné** : il a sa propre consigne.
+- La consigne **n'est pas réglable depuis la carte** : elle est calculée. Pour la rendre réglable, faites pointer le template vers un `input_number` (`{{ states('input_number.ma_consigne')|float }}`) et réglez celui-ci.
+- L'attribut `normal_humidity` expose la consigne hors boost (l'attribut standard `humidity` affiche celle du boost quand il est engagé).
 
 ### Conditions d'activation et d'erreur
 
@@ -189,6 +183,20 @@ Poser une condition bloquante (erreur `true`, activation `false`) est **immédia
 ### Capteur d'humidité muet
 
 Si le capteur principal passe `unavailable` / `unknown`, sa dernière valeur reste utilisée pendant 30 minutes. Au-delà, elle est abandonnée : la régulation se rabat sur le capteur interne de l'appareil s'il y en a un, et sinon coupe l'appareil plutôt que de le laisser tourner à l'aveugle.
+
+## Migration depuis la v1
+
+Les entrées créées avant l'unification de la consigne sont migrées automatiquement au premier chargement (`VERSION = 2`). Les trois anciens champs sont fusionnés en un template :
+
+| Ancienne configuration | Template généré |
+|---|---|
+| Consigne fixe `60` | `{{ 60 }}` |
+| Entité `sensor.consigne` | `{{ states('sensor.consigne')|float }}` |
+| Entité + écart `{{ -5 }}` | `{{ (states('sensor.consigne')|float) + (-5) }}` |
+
+Un écart écrit sur plusieurs instructions (`{% if %}`) ne peut pas être recomposé mécaniquement : la consigne est alors migrée **sans lui**, et un avertissement nommant l'écart à reporter apparaît dans le journal.
+
+La synchronisation bidirectionnelle avec un `input_number` disparaît : la consigne est calculée, donc en lecture seule sur la carte. Pour la garder réglable, pointez le template vers l'`input_number` et réglez celui-ci.
 
 ## Exemple de carte Mushroom
 

@@ -10,7 +10,6 @@
           "target_sensor": "Capteur d'humidité",
           "turn_on_action": "Actions à l'allumage",
           "turn_off_action": "Actions à l'extinction",
-          "target_humidity": "Humidité cible",
           "dry_tolerance": "Tolérance sèche",
           "wet_tolerance": "Tolérance humide",
           "min_humidity": "Humidité min (réglable)",
@@ -19,14 +18,13 @@
           "startup_delay": "Attente maximale des capteurs au démarrage de HA (s, 0 = régulation immédiate)",
           "enable_template": "Condition d'activation (template, vide = toujours actif)",
           "error_template": "Condition d'erreur (template, true = arrêt, vide = ignorée)",
-          "target_entity": "Entité de consigne (optionnelle, pilote l'humidité cible)",
           "boost_timer": "Timer de marche forcée (entité timer, actif = boost)",
           "boost_humidity": "Consigne en marche forcée (boost)",
           "device_entity": "Entité déshumidificateur (optionnelle : capteur interne + détection manuelle)",
           "power_switch": "Prise d'alimentation (optionnelle : coupure de courant si l'appareil ne répond plus)",
           "fan_entity": "Ventilateur de l'appareil (optionnel, pour piloter la puissance)",
           "fan_speed_template": "Puissance de ventilation (template rendant un %, défaut 50)",
-          "target_offset_template": "Écart sur la consigne (template rendant un nombre signé, ex. -5 ; défaut 0)"
+          "target_template": "Consigne (template, ex. {{ 55 }} ou {{ states('sensor.consigne')|float }})"
         }
       }
     },
@@ -35,7 +33,8 @@
       "invalid_template": "Template invalide.",
       "empty_action": "Les actions d'allumage et d'extinction sont obligatoires : sans elles, l'hygrostat croit piloter un appareil sans rien lui envoyer.",
       "self_reference": "Une action cible l'hygrostat lui-même : elle doit piloter l'appareil, pas l'entité qui le régule.",
-      "fan_entity_required": "Un template de puissance de ventilation exige de désigner le ventilateur."
+      "fan_entity_required": "Un template de puissance de ventilation exige de désigner le ventilateur.",
+      "target_required": "La consigne est obligatoire : un template, par exemple {{ 55 }}."
     },
     "abort": {
       "already_configured": "Un hygrostat porte déjà ce nom."
@@ -50,7 +49,6 @@
           "target_sensor": "Capteur d'humidité",
           "turn_on_action": "Actions à l'allumage",
           "turn_off_action": "Actions à l'extinction",
-          "target_humidity": "Humidité cible",
           "dry_tolerance": "Tolérance sèche",
           "wet_tolerance": "Tolérance humide",
           "min_humidity": "Humidité min (réglable)",
@@ -59,14 +57,13 @@
           "startup_delay": "Attente maximale des capteurs au démarrage de HA (s, 0 = régulation immédiate)",
           "enable_template": "Condition d'activation (template, vide = toujours actif)",
           "error_template": "Condition d'erreur (template, true = arrêt, vide = ignorée)",
-          "target_entity": "Entité de consigne (optionnelle, pilote l'humidité cible)",
           "boost_timer": "Timer de marche forcée (entité timer, actif = boost)",
           "boost_humidity": "Consigne en marche forcée (boost)",
           "device_entity": "Entité déshumidificateur (optionnelle : capteur interne + détection manuelle)",
           "power_switch": "Prise d'alimentation (optionnelle : coupure de courant si l'appareil ne répond plus)",
           "fan_entity": "Ventilateur de l'appareil (optionnel, pour piloter la puissance)",
           "fan_speed_template": "Puissance de ventilation (template rendant un %, défaut 50)",
-          "target_offset_template": "Écart sur la consigne (template rendant un nombre signé, ex. -5 ; défaut 0)"
+          "target_template": "Consigne (template, ex. {{ 55 }} ou {{ states('sensor.consigne')|float }})"
         }
       }
     },
@@ -75,7 +72,8 @@
       "invalid_template": "Template invalide.",
       "empty_action": "Les actions d'allumage et d'extinction sont obligatoires : sans elles, l'hygrostat croit piloter un appareil sans rien lui envoyer.",
       "self_reference": "Une action cible l'hygrostat lui-même : elle doit piloter l'appareil, pas l'entité qui le régule.",
-      "fan_entity_required": "Un template de puissance de ventilation exige de désigner le ventilateur."
+      "fan_entity_required": "Un template de puissance de ventilation exige de désigner le ventilateur.",
+      "target_required": "La consigne est obligatoire : un template, par exemple {{ 55 }}."
     }
   }
 }

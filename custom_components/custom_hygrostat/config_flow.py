@@ -23,9 +23,7 @@ from .const import (
     CONF_ACTION_OFF,
     CONF_MIN_HUMIDITY,
     CONF_MAX_HUMIDITY,
-    CONF_TARGET_HUMIDITY,
-    CONF_TARGET_ENTITY,
-    CONF_TARGET_OFFSET_TEMPLATE,
+    CONF_TARGET_TEMPLATE,
     CONF_DRY_TOLERANCE,
     CONF_WET_TOLERANCE,
     CONF_MIN_CYCLE_DURATION,
@@ -71,26 +69,11 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
             vol.Required(
                 CONF_ACTION_OFF, default=defaults.get(CONF_ACTION_OFF, [])
             ): selector.ActionSelector(),
-            vol.Optional(
-                CONF_TARGET_HUMIDITY,
-                default=defaults.get(CONF_TARGET_HUMIDITY, DEFAULT_TARGET_HUMIDITY),
-            ): selector.NumberSelector(
-                selector.NumberSelectorConfig(
-                    min=0, max=100, step=1, unit_of_measurement="%",
-                    mode=selector.NumberSelectorMode.SLIDER,
-                )
-            ),
-            vol.Optional(
-                CONF_TARGET_ENTITY,
-                description={"suggested_value": defaults.get(CONF_TARGET_ENTITY)},
-            ): selector.EntitySelector(
-                selector.EntitySelectorConfig(
-                    domain=["input_number", "number", "sensor"]
-                )
-            ),
-            vol.Optional(
-                CONF_TARGET_OFFSET_TEMPLATE,
-                default=defaults.get(CONF_TARGET_OFFSET_TEMPLATE, ""),
+            vol.Required(
+                CONF_TARGET_TEMPLATE,
+                default=defaults.get(
+                    CONF_TARGET_TEMPLATE, "{{ %s }}" % DEFAULT_TARGET_HUMIDITY
+                ),
             ): selector.TemplateSelector(),
             vol.Optional(
                 CONF_DRY_TOLERANCE,
@@ -245,11 +228,13 @@ def _validate(
     if user_input.get(CONF_FAN_SPEED_TEMPLATE) and not user_input.get(CONF_FAN_ENTITY):
         # Un template de vitesse sans ventilateur a piloter ne sert a rien
         errors[CONF_FAN_ENTITY] = "fan_entity_required"
+    if not (user_input.get(CONF_TARGET_TEMPLATE) or "").strip():
+        errors[CONF_TARGET_TEMPLATE] = "target_required"
     for conf in (
         CONF_ENABLE_TEMPLATE,
         CONF_ERROR_TEMPLATE,
         CONF_FAN_SPEED_TEMPLATE,
-        CONF_TARGET_OFFSET_TEMPLATE,
+        CONF_TARGET_TEMPLATE,
     ):
         if tpl := user_input.get(conf):
             try:
@@ -262,7 +247,7 @@ def _validate(
 class CustomHygrostatConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Custom Hygrostat."""
 
-    VERSION = 1
+    VERSION = 2
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -276,7 +261,6 @@ class CustomHygrostatConfigFlow(ConfigFlow, domain=DOMAIN):
                 # Champ vidé = None explicite, sinon la fusion data/options
                 # ressusciterait l'ancienne valeur
                 for conf in (
-                    CONF_TARGET_ENTITY,
                     CONF_BOOST_TIMER,
                     CONF_DEVICE_ENTITY,
                     CONF_POWER_SWITCH,
@@ -316,7 +300,6 @@ class CustomHygrostatOptionsFlow(OptionsFlow):
             errors = _validate(self.hass, user_input, self.config_entry)
             if not errors:
                 for conf in (
-                    CONF_TARGET_ENTITY,
                     CONF_BOOST_TIMER,
                     CONF_DEVICE_ENTITY,
                     CONF_POWER_SWITCH,
