@@ -5,6 +5,7 @@ import asyncio
 import logging
 from datetime import timedelta
 
+from homeassistant.components.fan import FanEntityFeature
 from homeassistant.components.humidifier import (
     HumidifierDeviceClass,
     HumidifierEntity,
@@ -26,15 +27,12 @@ from homeassistant.helpers.event import (
     async_track_template_result,
 )
 from homeassistant.helpers.restore_state import RestoreEntity
-from homeassistant.helpers.script import Script
 from homeassistant.helpers.template import Template, result_as_boolean
 from homeassistant.util import dt as dt_util
 
 from .const import (
     DOMAIN,
     CONF_SENSOR,
-    CONF_ACTION_ON,
-    CONF_ACTION_OFF,
     CONF_MIN_HUMIDITY,
     CONF_MAX_HUMIDITY,
     CONF_TARGET_TEMPLATE,
@@ -44,6 +42,8 @@ from .const import (
     CONF_BOOST_TIMER,
     CONF_BOOST_HUMIDITY,
     CONF_DEVICE_ENTITY,
+    DEVICE_RUN_MODE,
+    DEVICE_IDLE_MODES,
     CONF_ENABLE_TEMPLATE,
     CONF_ERROR_TEMPLATE,
     CONF_FAN_ENTITY,
@@ -80,8 +80,6 @@ async def async_setup_entry(
     cfg = {**entry.data, **entry.options}
 
     name = cfg.get(CONF_NAME, entry.title)
-    action_on = Script(hass, cfg[CONF_ACTION_ON], name, DOMAIN)
-    action_off = Script(hass, cfg[CONF_ACTION_OFF], name, DOMAIN)
 
     # Templates vides ou absents = hygrostat toujours autorisé
     enable_template = None
@@ -102,8 +100,6 @@ async def async_setup_entry(
                 unique_id=entry.entry_id,
                 name=name,
                 sensor_entity_id=cfg[CONF_SENSOR],
-                action_on=action_on,
-                action_off=action_off,
                 min_humidity=cfg.get(CONF_MIN_HUMIDITY, DEFAULT_MIN_HUMIDITY),
                 max_humidity=cfg.get(CONF_MAX_HUMIDITY, DEFAULT_MAX_HUMIDITY),
 
@@ -112,7 +108,7 @@ async def async_setup_entry(
                 min_cycle_minutes=cfg.get(CONF_MIN_CYCLE_DURATION, DEFAULT_MIN_CYCLE_MINUTES),
                 boost_timer_entity_id=cfg.get(CONF_BOOST_TIMER),
                 boost_humidity=cfg.get(CONF_BOOST_HUMIDITY, DEFAULT_BOOST_HUMIDITY),
-                device_entity_id=cfg.get(CONF_DEVICE_ENTITY),
+                device_entity_id=cfg[CONF_DEVICE_ENTITY],
                 power_switch_entity_id=cfg.get(CONF_POWER_SWITCH),
                 startup_delay_seconds=cfg.get(
                     CONF_STARTUP_DELAY, DEFAULT_STARTUP_DELAY_SECONDS
@@ -143,8 +139,6 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         unique_id,
         name,
         sensor_entity_id,
-        action_on,
-        action_off,
         min_humidity,
         max_humidity,
         dry_tolerance,
@@ -164,8 +158,6 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         self._attr_unique_id = unique_id
         self._attr_name = name
         self._sensor_entity_id = sensor_entity_id
-        self._action_on = action_on
-        self._action_off = action_off
         self._attr_min_humidity = min_humidity
         self._attr_max_humidity = max_humidity
         # Derniere valeur rendue par le template, restauree au redemarrage
@@ -494,21 +486,42 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             self.hass.async_create_task(self._async_push_fan_speed())
         self.async_write_ha_state()
 
-    async def _async_push_fan_speed(self):
-        if not self._fan_entity_id:
-            return
+    async def _async_call_fan(self, service, data):
         try:
             await self.hass.services.async_call(
                 "fan",
-                "set_percentage",
-                {"entity_id": self._fan_entity_id, "percentage": self._fan_speed},
+                service,
+                {"entity_id": self._fan_entity_id, **data},
                 blocking=True,
                 context=self._context,
             )
         except Exception:  # noqa: BLE001 - l'appareil peut etre injoignable
             _LOGGER.warning(
-                "Vitesse de ventilation non appliquee sur %s", self._fan_entity_id
+                "fan.%s sans effet sur %s", service, self._fan_entity_id
             )
+
+    async def _async_push_fan_speed(self):
+        if not self._fan_entity_id:
+            return
+        await self._async_call_fan("set_percentage", {"percentage": self._fan_speed})
+
+    async def _async_apply_fan(self):
+        """Réglages de ventilation appliqués juste après l'allumage."""
+        if not self._fan_entity_id:
+            return
+        state = self.hass.states.get(self._fan_entity_id)
+        if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            _LOGGER.debug("%s injoignable, ventilation non réglée", self._fan_entity_id)
+            return
+        features = state.attributes.get("supported_features") or 0
+        if features & FanEntityFeature.OSCILLATE and not state.attributes.get(
+            "oscillating"
+        ):
+            # Oscillation systématique, mais seulement si elle ne l'est pas
+            # déjà : inutile de renvoyer une commande à un appareil capricieux
+            await self._async_call_fan("oscillate", {"oscillating": True})
+        if self._fan_speed_template is not None:
+            await self._async_push_fan_speed()
 
     @callback
     def _apply_target(self, result):
@@ -1098,14 +1111,12 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         self._last_switched = dt_util.utcnow()
         # _active porte l'état on/off de l'entité : publication immédiate
         self.async_write_ha_state()
-        if not await self._async_run_action(self._action_on):
+        if not await self._async_drive_device(True):
             self._active = False
             self.async_write_ha_state()
             return
-        # La sequence d'allumage n'a plus a fixer la vitesse : c'est le
-        # template qui decide, et il peut avoir change depuis le dernier cycle
-        if self._fan_speed_template is not None:
-            await self._async_push_fan_speed()
+        # Oscillation et vitesse posées sur l'état réel du ventilateur
+        await self._async_apply_fan()
 
     async def _async_device_turn_off(self, force=False):
         # force : coupure de sécurité (erreur, suspension, arrêt manuel), à
@@ -1121,16 +1132,60 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         self._active = False
         self._last_switched = dt_util.utcnow()
         self.async_write_ha_state()
-        if not await self._async_run_action(self._action_off):
+        if not await self._async_drive_device(False):
             self._active = was_active
             self.async_write_ha_state()
 
-    async def _async_run_action(self, script):
-        """Exécute une séquence d'actions ; renvoie False si elle a échoué."""
-        try:
+    async def _async_call_device(self, service, data):
+        await self.hass.services.async_call(
+            "humidifier",
+            service,
+            {"entity_id": self._device_entity_id, **data},
+            blocking=True,
             # Sans contexte, HA émet un avertissement et perd la traçabilité
-            await script.async_run(context=self._context or Context())
-        except Exception:  # noqa: BLE001 - séquence utilisateur, tout est possible
-            _LOGGER.exception("Échec de la séquence d'actions")
+            context=self._context or Context(),
+        )
+
+    async def _async_drive_device(self, turn_on):
+        """Pilote l'appareil ; renvoie False si la séquence a échoué.
+
+        La séquence est fixe, mais s'adapte à ce que l'appareil déclare : les
+        modes ne portent pas les mêmes noms partout, et tous n'en ont pas.
+        """
+        state = self.hass.states.get(self._device_entity_id)
+        if state is None:
+            return False
+        modes = state.attributes.get("available_modes") or []
+        run_mode = DEVICE_RUN_MODE if DEVICE_RUN_MODE in modes else None
+        idle_mode = next((m for m in DEVICE_IDLE_MODES if m in modes), None)
+        min_h = state.attributes.get("min_humidity")
+        max_h = state.attributes.get("max_humidity")
+
+        try:
+            if turn_on:
+                await self._async_call_device("turn_on", {})
+                if run_mode:
+                    # Le mode de marche forcée ignore la consigne interne,
+                    # laissée volontairement inatteignable à l'extinction
+                    await self._async_call_device("set_mode", {"mode": run_mode})
+                elif min_h is not None:
+                    # Sans mode de marche forcée, il faut lui rendre une
+                    # consigne atteignable, sinon il ne ferait rien
+                    await self._async_call_device("set_humidity", {"humidity": min_h})
+            else:
+                # Écritures AVANT la coupure : beaucoup d'appareils ignorent
+                # les commandes une fois éteints. L'appareil est ainsi laissé
+                # inoffensif s'il venait à redémarrer sans nous.
+                if idle_mode:
+                    await self._async_call_device("set_mode", {"mode": idle_mode})
+                if max_h is not None:
+                    await self._async_call_device("set_humidity", {"humidity": max_h})
+                await self._async_call_device("turn_off", {})
+        except Exception:  # noqa: BLE001 - l'appareil peut refuser ou disparaître
+            _LOGGER.exception(
+                "Échec du pilotage de %s (%s)",
+                self._device_entity_id,
+                "allumage" if turn_on else "extinction",
+            )
             return False
         return True

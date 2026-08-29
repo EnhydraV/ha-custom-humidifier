@@ -5,8 +5,6 @@ DOMAIN = "custom_hygrostat"
 PLATFORMS = ["humidifier"]
 
 CONF_SENSOR = "target_sensor"
-CONF_ACTION_ON = "turn_on_action"
-CONF_ACTION_OFF = "turn_off_action"
 CONF_MIN_HUMIDITY = "min_humidity"
 CONF_MAX_HUMIDITY = "max_humidity"
 # Consigne normale : un template, seule source de verite. Une valeur fixe
@@ -19,8 +17,16 @@ CONF_MIN_CYCLE_DURATION = "min_cycle_duration"
 CONF_BOOST_TIMER = "boost_timer"
 # Consigne forcée pendant le mode boost
 CONF_BOOST_HUMIDITY = "boost_humidity"
-# Entité humidifier du fabricant : capteur interne + détection manuelle
+# Entite humidifier de l'appareil : pilotage, capteur interne et detection
+# de la marche manuelle. Obligatoire depuis la v3.
 CONF_DEVICE_ENTITY = "device_entity"
+
+# Modes de l'appareil pilote. "boost" fait tourner en continu en ignorant la
+# consigne interne (mesure : 468 W avec une consigne inatteignable) ; a
+# l'arret on revient a un mode de regulation normale. Un appareil qui ne
+# declare pas ces modes est pilote par sa seule consigne.
+DEVICE_RUN_MODE = "boost"
+DEVICE_IDLE_MODES = ("auto", "normal")
 CONF_ENABLE_TEMPLATE = "enable_template"
 # Ventilateur de l'appareil et template decidant sa puissance (en %)
 CONF_FAN_ENTITY = "fan_entity"

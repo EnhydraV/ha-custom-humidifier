@@ -4,12 +4,10 @@
     "step": {
       "user": {
         "title": "Custom Hygrostat",
-        "description": "Configure your humidity-driven dehumidifier.",
+        "description": "Configure your humidity-driven dehumidifier.\n\nCurrent template rendering:\n{preview}",
         "data": {
           "name": "Name",
           "target_sensor": "Humidity sensor",
-          "turn_on_action": "Turn-on actions",
-          "turn_off_action": "Turn-off actions",
           "dry_tolerance": "Dry tolerance",
           "wet_tolerance": "Wet tolerance",
           "min_humidity": "Min humidity (adjustable)",
@@ -20,7 +18,7 @@
           "error_template": "Error condition (template, true = stop, empty = ignored)",
           "boost_timer": "Boost timer (timer entity, active = boost)",
           "boost_humidity": "Boost target humidity",
-          "device_entity": "Dehumidifier entity (optional: internal sensor + manual detection)",
+          "device_entity": "Dehumidifier entity (driven by the hygrostat, and source of the internal sensor)",
           "power_switch": "Power switch (optional: power-cycles the device when it stops responding)",
           "fan_entity": "Device fan (optional, to drive the speed)",
           "fan_speed_template": "Fan speed (template returning a %, default 50)",
@@ -31,8 +29,7 @@
     "error": {
       "humidity_range": "Minimum humidity must be lower than maximum.",
       "invalid_template": "Invalid template.",
-      "empty_action": "Turn-on and turn-off actions are required: without them the hygrostat believes it drives a device while sending nothing.",
-      "self_reference": "An action targets the hygrostat itself: it must drive the device, not the entity regulating it.",
+      "self_reference": "This is the hygrostat's own entity: point to the appliance, not to its regulator.",
       "fan_entity_required": "A fan speed template requires selecting the fan entity.",
       "target_required": "The setpoint is required: a template, for instance {{ 55 }}."
     },
@@ -47,8 +44,6 @@
         "data": {
           "name": "Name",
           "target_sensor": "Humidity sensor",
-          "turn_on_action": "Turn-on actions",
-          "turn_off_action": "Turn-off actions",
           "dry_tolerance": "Dry tolerance",
           "wet_tolerance": "Wet tolerance",
           "min_humidity": "Min humidity (adjustable)",
@@ -59,19 +54,19 @@
           "error_template": "Error condition (template, true = stop, empty = ignored)",
           "boost_timer": "Boost timer (timer entity, active = boost)",
           "boost_humidity": "Boost target humidity",
-          "device_entity": "Dehumidifier entity (optional: internal sensor + manual detection)",
+          "device_entity": "Dehumidifier entity (driven by the hygrostat, and source of the internal sensor)",
           "power_switch": "Power switch (optional: power-cycles the device when it stops responding)",
           "fan_entity": "Device fan (optional, to drive the speed)",
           "fan_speed_template": "Fan speed (template returning a %, default 50)",
           "target_template": "Setpoint (template, e.g. {{ 55 }} or {{ states('sensor.setpoint')|float }})"
-        }
+        },
+        "description": "Current template rendering:\n{preview}"
       }
     },
     "error": {
       "humidity_range": "Minimum humidity must be lower than maximum.",
       "invalid_template": "Invalid template.",
-      "empty_action": "Turn-on and turn-off actions are required: without them the hygrostat believes it drives a device while sending nothing.",
-      "self_reference": "An action targets the hygrostat itself: it must drive the device, not the entity regulating it.",
+      "self_reference": "This is the hygrostat's own entity: point to the appliance, not to its regulator.",
       "fan_entity_required": "A fan speed template requires selecting the fan entity.",
       "target_required": "The setpoint is required: a template, for instance {{ 55 }}."
     }

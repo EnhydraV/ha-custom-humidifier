@@ -19,8 +19,6 @@ from homeassistant.util import slugify
 from .const import (
     DOMAIN,
     CONF_SENSOR,
-    CONF_ACTION_ON,
-    CONF_ACTION_OFF,
     CONF_MIN_HUMIDITY,
     CONF_MAX_HUMIDITY,
     CONF_TARGET_TEMPLATE,
@@ -64,11 +62,10 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                 )
             ),
             vol.Required(
-                CONF_ACTION_ON, default=defaults.get(CONF_ACTION_ON, [])
-            ): selector.ActionSelector(),
-            vol.Required(
-                CONF_ACTION_OFF, default=defaults.get(CONF_ACTION_OFF, [])
-            ): selector.ActionSelector(),
+                CONF_DEVICE_ENTITY, default=defaults.get(CONF_DEVICE_ENTITY)
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="humidifier")
+            ),
             vol.Required(
                 CONF_TARGET_TEMPLATE,
                 default=defaults.get(
@@ -145,12 +142,6 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                 )
             ),
             vol.Optional(
-                CONF_DEVICE_ENTITY,
-                description={"suggested_value": defaults.get(CONF_DEVICE_ENTITY)},
-            ): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="humidifier")
-            ),
-            vol.Optional(
                 CONF_POWER_SWITCH,
                 description={"suggested_value": defaults.get(CONF_POWER_SWITCH)},
             ): selector.EntitySelector(
@@ -180,6 +171,36 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
     )
 
 
+# Templates dont le rendu est affiché sous le formulaire, avec leur libellé
+PREVIEWED = (
+    (CONF_TARGET_TEMPLATE, "Consigne"),
+    (CONF_FAN_SPEED_TEMPLATE, "Ventilation"),
+    (CONF_ENABLE_TEMPLATE, "Activation"),
+    (CONF_ERROR_TEMPLATE, "Erreur"),
+)
+
+
+@callback
+def _preview(hass: HomeAssistant, values: dict[str, Any]) -> dict[str, str]:
+    """Rend les templates pour les montrer sous le formulaire.
+
+    Evalué à chaque affichage, donc aussi après une erreur de validation :
+    corriger un template et resoumettre suffit à en voir le résultat.
+    """
+    lignes = []
+    for conf, label in PREVIEWED:
+        tpl = (values.get(conf) or "").strip()
+        if not tpl:
+            continue
+        try:
+            rendu = Template(tpl, hass).async_render(parse_result=False)
+        except Exception as err:  # noqa: BLE001 - template utilisateur
+            rendu = f"erreur de rendu ({err})"
+        lignes.append(f"{label} : {rendu}")
+    # La clé doit toujours exister, sinon le formatage du libellé échoue
+    return {"preview": "\n".join(lignes) if lignes else "aucun template renseigné"}
+
+
 def _own_entity_ids(
     hass: HomeAssistant, user_input: dict[str, Any], entry: ConfigEntry | None
 ) -> set[str]:
@@ -194,17 +215,6 @@ def _own_entity_ids(
     return {eid for eid in ids if eid and not eid.endswith(".")}
 
 
-def _referenced_strings(node: Any) -> set[str]:
-    """Toutes les chaînes d'une séquence d'actions, pour comparaison exacte."""
-    if isinstance(node, str):
-        return {node}
-    if isinstance(node, dict):
-        return set().union(*(_referenced_strings(v) for v in node.values())) if node else set()
-    if isinstance(node, (list, tuple)):
-        return set().union(*(_referenced_strings(v) for v in node)) if node else set()
-    return set()
-
-
 def _validate(
     hass: HomeAssistant,
     user_input: dict[str, Any],
@@ -215,15 +225,9 @@ def _validate(
     if user_input[CONF_MIN_HUMIDITY] >= user_input[CONF_MAX_HUMIDITY]:
         errors["base"] = "humidity_range"
     own_ids = _own_entity_ids(hass, user_input, entry)
-    for conf in (CONF_ACTION_ON, CONF_ACTION_OFF):
-        actions = user_input.get(conf)
-        if not actions:
-            # Une séquence vide laisse l'hygrostat croire qu'il pilote quelque
-            # chose alors qu'il n'envoie rien
-            errors[conf] = "empty_action"
-            continue
-        if own_ids & _referenced_strings(actions):
-            # Une action qui cible l'hygrostat lui-même reboucle sur lui
+    for conf in (CONF_DEVICE_ENTITY, CONF_FAN_ENTITY, CONF_POWER_SWITCH):
+        if (target := user_input.get(conf)) and target in own_ids:
+            # Se désigner soi-même comme appareil piloté reboucle sur soi
             errors[conf] = "self_reference"
     if user_input.get(CONF_FAN_SPEED_TEMPLATE) and not user_input.get(CONF_FAN_ENTITY):
         # Un template de vitesse sans ventilateur a piloter ne sert a rien
@@ -247,7 +251,7 @@ def _validate(
 class CustomHygrostatConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Custom Hygrostat."""
 
-    VERSION = 2
+    VERSION = 3
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -262,7 +266,6 @@ class CustomHygrostatConfigFlow(ConfigFlow, domain=DOMAIN):
                 # ressusciterait l'ancienne valeur
                 for conf in (
                     CONF_BOOST_TIMER,
-                    CONF_DEVICE_ENTITY,
                     CONF_POWER_SWITCH,
                     CONF_FAN_ENTITY,
                 ):
@@ -275,8 +278,12 @@ class CustomHygrostatConfigFlow(ConfigFlow, domain=DOMAIN):
                     title=user_input[CONF_NAME], data=user_input
                 )
 
+        defaults = user_input or {}
         return self.async_show_form(
-            step_id="user", data_schema=_schema(user_input or {}), errors=errors
+            step_id="user",
+            data_schema=_schema(defaults),
+            errors=errors,
+            description_placeholders=_preview(self.hass, defaults),
         )
 
     @staticmethod
@@ -301,7 +308,6 @@ class CustomHygrostatOptionsFlow(OptionsFlow):
             if not errors:
                 for conf in (
                     CONF_BOOST_TIMER,
-                    CONF_DEVICE_ENTITY,
                     CONF_POWER_SWITCH,
                     CONF_FAN_ENTITY,
                 ):
@@ -310,5 +316,8 @@ class CustomHygrostatOptionsFlow(OptionsFlow):
 
         current = {**self.config_entry.data, **self.config_entry.options}
         return self.async_show_form(
-            step_id="init", data_schema=_schema(current), errors=errors
+            step_id="init",
+            data_schema=_schema(current),
+            errors=errors,
+            description_placeholders=_preview(self.hass, user_input or current),
         )

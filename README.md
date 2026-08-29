@@ -3,7 +3,7 @@
 Un hygrostat pour Home Assistant dérivé du `generic_hygrostat`, mais adapté à un cas d'usage spécifique :
 
 - **Déshumidificateur uniquement** — la logique de régulation est inversée par rapport à un humidificateur.
-- **Pas d'interrupteur** — l'allumage et l'extinction de l'appareil sont remplacés par des **séquences d'actions** (prise connectée, commande IR, notification, etc.), éditables dans l'UI.
+- **Pilotage direct de l'appareil** — l'hygrostat commande l'entité `humidifier` du fabricant (marche, mode, consigne interne), et la laisse dans un état inoffensif à l'extinction.
 - **Marche forcée (boost)** — un mode `boost` force la **consigne** à une valeur dédiée (défaut 50 %) ; la régulation continue de fonctionner normalement avec cette cible abaissée. Piloté par une entité `timer` optionnelle (timer actif = boost, restauré après redémarrage de HA) ; sans timer, la marche forcée dure jusqu'au retour manuel en mode `normal`.
 - **Conditions d'activation et d'erreur (templates)** — deux templates optionnels qui verrouillent l'appareil : la condition d'activation coupe quand elle rend `false`, la condition d'erreur coupe quand elle rend `true` (réservoir plein...). L'appareil ne peut tourner que si activation = `true` **et** erreur = `false`.
 - **Réglages capteur conservés** — capteur d'humidité cible, humidité cible, tolérances sèche/humide, plage min/max réglable, durée minimale de cycle.
@@ -23,8 +23,7 @@ Tout se configure via l'interface (config flow + options flow). L'intégration e
 |---|---|
 | Nom | Nom de l'entité hygrostat |
 | Capteur d'humidité | `sensor` de classe `humidity` |
-| Actions à l'allumage | Séquence exécutée quand le déshumidificateur doit démarrer (obligatoire, non vide) |
-| Actions à l'extinction | Séquence exécutée quand il doit s'arrêter (obligatoire, non vide) |
+| Entité déshumidificateur | Entité `humidifier` de l'appareil, pilotée par l'hygrostat (obligatoire) |
 | Consigne | Template rendant la consigne d'humidité (obligatoire) |
 | Tolérance humide | Démarrage quand humidité ≥ cible + tolérance humide |
 | Tolérance sèche | Arrêt quand humidité ≤ cible − tolérance sèche |
@@ -33,12 +32,31 @@ Tout se configure via l'interface (config flow + options flow). L'intégration e
 | Attente maximale au démarrage | Plafond de l'attente des capteurs après un redémarrage de HA (défaut 120 s, 0 = régulation immédiate) |
 | Timer de marche forcée | Entité `timer` optionnelle qui pilote le mode `boost` |
 | Consigne en marche forcée | Consigne appliquée pendant le mode `boost` (défaut 50 %) |
-| Entité déshumidificateur | Entité `humidifier` optionnelle du fabricant : capteur interne (moyenné) + détection manuelle |
 | Prise d'alimentation | `switch` ou `input_boolean` optionnel : coupure de courant automatique quand l'appareil ne répond plus |
-| Ventilateur de l'appareil | Entité `fan` optionnelle, cible du réglage de puissance |
+| Ventilateur de l'appareil | Entité `fan` optionnelle : oscillation forcée et cible du réglage de puissance |
 | Puissance de ventilation | Template optionnel rendant un pourcentage (défaut 50) |
 | Condition d'activation | Template optionnel ; `false` = appareil coupé (vide = toujours `true`) |
 | Condition d'erreur | Template optionnel ; `true` = appareil coupé (vide = toujours `false`) |
+
+### Vérifier ses templates
+
+Le formulaire affiche, sous sa description, le **rendu courant** des quatre templates (consigne, ventilation, activation, erreur) : chacun est évalué au moment où le formulaire s'affiche, et un template fautif montre son message d'erreur au lieu d'une valeur.
+
+Ce n'est pas un aperçu à la frappe - un config flow ne réévalue rien sans soumission - mais le rendu est recalculé **à chaque affichage, y compris après une erreur de validation**. Corriger un template et resoumettre suffit donc à voir son résultat. Les templates vides ne sont pas listés.
+
+Une fois l'hygrostat créé, les mêmes valeurs restent lisibles en continu dans ses attributs : `humidity` et `normal_humidity` pour la consigne, `fan_speed`, `enabled` et `error_active`.
+
+## Pilotage de l'appareil
+
+L'hygrostat pilote directement l'entité `humidifier` de l'appareil. La séquence est fixe, mais s'adapte à ce que l'appareil déclare — les modes ne portent pas les mêmes noms partout, et tous n'en ont pas.
+
+**À l'allumage** : `turn_on`, puis passage en mode `boost` s'il existe. Ce mode fait tourner l'appareil en continu en ignorant sa consigne interne. À défaut de mode `boost`, sa consigne est ramenée à son minimum, sans quoi il ne ferait rien.
+
+**À l'extinction** : mode `auto` (ou `normal`) s'il existe, consigne interne portée à son **maximum**, puis `turn_off` — dans cet ordre, car beaucoup d'appareils ignorent les commandes une fois éteints.
+
+Ce dernier point est le plus important et le moins évident : l'appareil est laissé **inoffensif**. S'il redémarre sans Home Assistant (retour de courant, reconnexion de son intégration), il restaure son état allumé mais sa propre régulation est déjà satisfaite, donc il ne déshumidifie pas. Sans cela, un appareil dont la consigne interne est basse assèche la pièce dès qu'il retrouve le courant, et l'hygrostat ne peut le corriger qu'une fois revenu.
+
+La même entité sert aussi de **capteur interne** (son `current_humidity` est moyenné avec le capteur principal) et de **détecteur de marche manuelle**.
 
 ## Fonctionnement de la régulation
 
@@ -63,9 +81,9 @@ Sans timer configuré, le mode `boost` est une marche forcée sans limite de dur
 
 ### Détection de la marche manuelle
 
-L'hygrostat pilote l'appareil à l'aveugle via les actions : il ne sait pas ce que fait réellement l'appareil. En configurant l'**entité déshumidificateur** du fabricant, il compare l'état réel (`on`/`off`) à ce qu'il croit :
+L'hygrostat compare en permanence l'état réel de l'appareil (`on`/`off`) à ce qu'il croit avoir commandé :
 
-- **Allumage inattendu** (quelqu'un a démarré l'appareil à la main) → l'appareil est laissé en marche, un éventuel blocage 2 h est levé, et la régulation reprend simplement la main : l'appareil sera éteint quand l'humidité passera sous `consigne − tolérance sèche`. Si la condition d'erreur est active, la marche est refusée : les actions d'extinction sont exécutées. (Le passage automatique en mode `boost`, comportement antérieur, est désactivé dans le code.)
+- **Allumage inattendu** (quelqu'un a démarré l'appareil à la main) → l'appareil est laissé en marche, un éventuel blocage 2 h est levé, et la régulation reprend simplement la main : l'appareil sera éteint quand l'humidité passera sous `consigne − tolérance sèche`. Si la condition d'erreur est active, la marche est refusée : l'appareil est éteint. (Le passage automatique en mode `boost`, comportement antérieur, est désactivé dans le code.)
 - **Extinction inattendue hors boost** → la régulation est bloquée pendant **2 h** : l'appareil ne sera pas relancé automatiquement avant l'échéance (attribut `manual_off_until`). `humidifier.turn_off` sur l'hygrostat produit le même blocage. Il est levé par un rallumage manuel, par un boost (`humidifier.turn_on`, mode `boost`) ou à l'expiration, et ne survit pas à un redémarrage de HA.
 - **Extinction inattendue pendant un boost** → sortie du boost et resynchronisation ; la régulation reprend la main au prochain changement d'humidité (durée min de cycle respectée).
 - **Au démarrage de HA**, l'état réel de l'appareil resynchronise l'hygrostat (sans déclencher de boost).
@@ -124,7 +142,7 @@ Deux templates optionnels, réévalués à chaque changement des entités qu'ils
 
 Les deux conditions n'ont pas le même poids face au mode `boost` :
 
-- **Condition d'erreur `true`** : coupure immédiate de tout (actions d'extinction), **y compris un `boost` en cours** (timer annulé). Le boost est refusé tant que l'erreur est active.
+- **Condition d'erreur `true`** : coupure immédiate de tout, **y compris un `boost` en cours** (timer annulé). Le boost est refusé tant que l'erreur est active.
 - **Condition d'activation `false`** : suspend uniquement la régulation normale (appareil coupé en mode `normal`). **Le mode `boost` l'ignore** : il peut démarrer et se poursuivre — y compris déclenché par une marche manuelle. À la fin du boost, si l'activation est toujours `false`, l'appareil est coupé.
 
 Au déverrouillage, la régulation reprend normalement.
@@ -137,15 +155,15 @@ Exemple — condition d'erreur pour couper quand le réservoir est plein, sans a
 
 Nuance : si le capteur passe `unavailable`, `is_state(..., 'on')` rend `false` → pas d'erreur, l'appareil continue. Pour couper aussi sur capteur indisponible (fail-safe) : `{{ not is_state('binary_sensor.dryfy_cave_nw_reservoir', 'off') }}`.
 
-### Puissance de ventilation
+### Ventilation
 
-Le champ **Puissance de ventilation** prend un template rendant un pourcentage, appliqué à l'entité `fan` désignée. Il est évalué à chaque allumage **et réappliqué à chaud** dès que son résultat change pendant que l'appareil tourne, ce qu'une valeur figée dans la séquence d'allumage ne permet pas.
+Dès qu'une **entité ventilateur** est renseignée, l'hygrostat **remet l'oscillation** juste après chaque allumage — mais uniquement si elle n'est pas déjà active, et uniquement si le ventilateur déclare la prendre en charge. Inutile de renvoyer une commande à un appareil qui l'exécute déjà, surtout sur du matériel capricieux. Une oscillation coupée à la main pendant que la machine tourne n'est pas rétablie : elle le sera au cycle suivant.
+
+Le champ **Puissance de ventilation** prend un template rendant un pourcentage, appliqué à la même entité `fan`. Il est évalué à chaque allumage **et réappliqué à chaud** dès que son résultat change pendant que l'appareil tourne.
 
 ```jinja
 {{ 100 if states('sensor.humidite_cave')|float(0) > 75 else 50 }}
 ```
-
-Quand ce template est renseigné, **retirez le `fan.set_percentage` de vos actions d'allumage** : l'intégration s'en charge, juste après la séquence, et l'écraserait de toute façon.
 
 Un résultat illisible, nul ou hors de la plage `0 < x <= 100` provoque un repli sur 50 avec un avertissement dans le journal. Zéro est refusé volontairement : sur beaucoup de ces appareils, couper le ventilateur coupe aussi la déshumidification. Pensez aussi aux paliers réels de votre matériel : les DryFy n'ont que deux vitesses (`percentage_step: 50`), donc seuls 50 et 100 ont un effet distinct.
 
@@ -156,7 +174,7 @@ Attribut exposé : `fan_speed`.
 L'hygrostat ne peut pas être plus fiable que l'entité qu'il pilote. Trois garde-fous, tous actifs uniquement si le champ **Entité déshumidificateur** est renseigné :
 
 - **Entité indisponible** : si l'entité de l'appareil reste `unavailable` / `unknown` plus de 60 secondes, l'hygrostat se déclare lui aussi indisponible plutôt que d'afficher une marche imaginaire, et cesse de piloter. Il redevient disponible dès que l'appareil republie un état.
-- **Aucune action dans le vide** : un allumage est refusé (avec un avertissement dans le journal) tant que l'appareil ne publie pas d'état exploitable, et une séquence d'actions qui échoue remet l'état affiché à sa valeur précédente.
+- **Aucune commande dans le vide** : un allumage est refusé (avec un avertissement dans le journal) tant que l'appareil ne publie pas d'état exploitable, et une commande qui échoue remet l'état affiché à sa valeur précédente.
 - **Retour de l'appareil = resynchronisation, pas action manuelle** : un état qui réapparaît après `unknown` / `unavailable` n'est jamais interprété comme un geste humain (donc ni blocage de 2 h, ni levée de blocage) ; l'hygrostat se recale silencieusement puis laisse la régulation trancher.
 
 Les coupures de sécurité (condition d'erreur, condition d'activation `false`, `turn_off`) sont envoyées **même si l'hygrostat se croit déjà à l'arrêt**, dès lors que l'appareil, lui, se déclare en marche.
@@ -184,7 +202,7 @@ Poser une condition bloquante (erreur `true`, activation `false`) est **immédia
 
 Si le capteur principal passe `unavailable` / `unknown`, sa dernière valeur reste utilisée pendant 30 minutes. Au-delà, elle est abandonnée : la régulation se rabat sur le capteur interne de l'appareil s'il y en a un, et sinon coupe l'appareil plutôt que de le laisser tourner à l'aveugle.
 
-## Migration depuis la v1
+## Migration depuis les versions antérieures
 
 Les entrées créées avant l'unification de la consigne sont migrées automatiquement au premier chargement (`VERSION = 2`). Les trois anciens champs sont fusionnés en un template :
 
@@ -197,6 +215,8 @@ Les entrées créées avant l'unification de la consigne sont migrées automatiq
 Un écart écrit sur plusieurs instructions (`{% if %}`) ne peut pas être recomposé mécaniquement : la consigne est alors migrée **sans lui**, et un avertissement nommant l'écart à reporter apparaît dans le journal.
 
 La synchronisation bidirectionnelle avec un `input_number` disparaît : la consigne est calculée, donc en lecture seule sur la carte. Pour la garder réglable, pointez le template vers l'`input_number` et réglez celui-ci.
+
+En `VERSION = 3`, les **séquences d'actions** disparaissent au profit du pilotage direct de l'entité déshumidificateur. Elles ne peuvent pas être converties automatiquement — elles pouvaient piloter n'importe quoi, y compris sans entité — donc elles sont simplement supprimées. Une entrée qui n'avait pas d'entité déshumidificateur refuse de se charger, avec un message demandant de la renseigner dans les options.
 
 ## Exemple de carte Mushroom
 

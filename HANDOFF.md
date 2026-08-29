@@ -746,6 +746,82 @@ SANS l'ecart, avec un avertissement nommant l'ecart a reporter a la main
 (recomposer du Jinja arbitraire par concatenation produirait un template
 douteux). Les cles v1 sont retirees de `data` ET de `options`.
 
+### Rendu des templates dans le formulaire (2026-08-29)
+
+`_preview()` rend les quatre templates (consigne, ventilation, activation,
+erreur) et renvoie un unique placeholder `preview` injecte via
+`description_placeholders` dans les deux etapes (`user` et `init`). Les
+descriptions de `strings.json` / `translations/*` contiennent `{preview}`.
+
+ATTENTION : la cle `preview` doit TOUJOURS exister, meme vide, sinon le
+formatage du libelle par HA echoue. D'ou le repli
+« aucun template renseigne ».
+
+Ce n'est PAS un apercu a la frappe (un config flow ne reevalue rien sans
+soumission), mais le rendu est recalcule a chaque affichage du formulaire, donc
+aussi apres une erreur de validation : corriger et resoumettre suffit a voir le
+resultat. Les templates vides sont omis, un template fautif affiche son message
+d'erreur (l'exception est attrapee largement, c'est du code utilisateur).
+
+L'etape `options.init` n'avait pas de `description` du tout, elle a ete ajoutee.
+
+### Oscillation forcee a l'allumage (2026-08-29)
+
+Des qu'une entite `fan` est renseignee, `_async_apply_fan()` (appelee apres une
+sequence d'allumage REUSSIE) remet l'oscillation, puis pousse la vitesse si un
+template de vitesse existe. En dur, pas de champ de configuration.
+
+Deux gardes, demandees par l'utilisateur ou dictees par le materiel :
+- seulement si `oscillating` n'est pas deja vrai : inutile de renvoyer une
+  commande a un module Tuya capricieux ;
+- seulement si le ventilateur declare `FanEntityFeature.OSCILLATE` dans
+  `supported_features`, sinon on genererait un avertissement a chaque cycle sur
+  un appareil qui n'oscille pas.
+
+Rien n'est envoye si le ventilateur est injoignable. Une oscillation coupee A LA
+MAIN en cours de marche n'est PAS retablie : on ne se bat pas avec l'utilisateur
+pendant un cycle, elle reviendra au suivant. Les appels `fan.*` passent par
+`_async_call_fan`, qui absorbe les erreurs.
+
+A FAIRE cote instance : retirer `fan.oscillate` ET `fan.set_percentage` des
+actions d'allumage des 4 entries une fois l'entite ventilateur renseignee.
+
+### Pilotage direct de l'appareil (2026-08-29, VERSION 3)
+
+Sur demande de l'utilisateur, les sequences d'actions (`turn_on_action` /
+`turn_off_action`) sont SUPPRIMEES. `device_entity` devient OBLIGATOIRE et
+l'hygrostat pilote l'entite `humidifier` lui-meme, en dur.
+
+C'est l'abandon de la decision fondatrice du projet (« actions plutot que
+switch »). Arbitrage assume : les 4 entries pilotaient toutes une entite
+`humidifier`, et les actions ont ete la source des deux bugs de config de la
+journee (extinction VIDE sur DH SDB NE, `set_mode` auto-referent sur DH SAM
+d'ete). Contrepartie : un appareil pilote en IR ou par scenario n'est plus
+supportable.
+
+`_async_drive_device(turn_on)` remplace `_async_run_action`. La sequence est
+fixe mais s'ADAPTE a ce que l'appareil declare, sinon elle ne marcherait que
+pour les DryFy :
+- allumage : `turn_on`, puis `set_mode boost` si ce mode est declare ; sinon
+  `set_humidity` au `min_humidity` de l'appareil, faute de quoi il ne ferait
+  rien (sa consigne ayant ete laissee au maximum a l'extinction) ;
+- extinction : `set_mode` vers `auto` ou `normal` si declare, `set_humidity` au
+  `max_humidity` de l'appareil, puis `turn_off`. L'ORDRE EST CRITIQUE, beaucoup
+  d'appareils Tuya ignorant les commandes une fois eteints.
+
+Les noms de modes viennent de `DEVICE_RUN_MODE` / `DEVICE_IDLE_MODES` dans
+`const.py`, croises avec `available_modes` de l'appareil.
+
+Migration `_migrate_v2_to_v3` : retrait des deux cles d'actions. Aucune
+conversion possible vers une entite (une sequence pouvait piloter n'importe
+quoi), donc si `device_entity` manque, avertissement a la migration ET
+`async_setup_entry` renvoie False avec un message clair, plutot que de charger
+une entree incapable de piloter quoi que ce soit.
+
+La validation du config flow ne verifie plus des sequences mais l'absence
+d'auto-reference sur `device_entity`, `fan_entity` et `power_switch`.
+`_referenced_strings` et l'erreur `empty_action` ont disparu.
+
 ### Reste a faire
 
 - `min_cycle_duration` est a 5 min sur les 4 entries (il etait a 0). Consequence

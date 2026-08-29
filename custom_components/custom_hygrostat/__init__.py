@@ -7,7 +7,12 @@ import re
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import CONF_TARGET_TEMPLATE, DEFAULT_TARGET_HUMIDITY, PLATFORMS
+from .const import (
+    CONF_DEVICE_ENTITY,
+    CONF_TARGET_TEMPLATE,
+    DEFAULT_TARGET_HUMIDITY,
+    PLATFORMS,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -15,6 +20,9 @@ _LOGGER = logging.getLogger(__name__)
 LEGACY_TARGET_HUMIDITY = "target_humidity"
 LEGACY_TARGET_ENTITY = "target_entity"
 LEGACY_TARGET_OFFSET = "target_offset_template"
+# Clés de la v2, remplacées par le pilotage direct de l'entité appareil
+LEGACY_ACTION_ON = "turn_on_action"
+LEGACY_ACTION_OFF = "turn_off_action"
 
 # Un template d'une seule expression, dont on peut réutiliser le corps
 SINGLE_EXPRESSION = re.compile(r"^\s*\{\{(?P<body>[^{}]+)\}\}\s*$")
@@ -22,6 +30,14 @@ SINGLE_EXPRESSION = re.compile(r"^\s*\{\{(?P<body>[^{}]+)\}\}\s*$")
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Custom Hygrostat from a config entry."""
+    if not {**entry.data, **entry.options}.get(CONF_DEVICE_ENTITY):
+        # Entrée créée quand l'appareil se pilotait par séquences d'actions :
+        # sans entité, il n'y a plus rien à piloter
+        _LOGGER.error(
+            "%s : aucune entité déshumidificateur, reconfigurez l'entrée",
+            entry.title,
+        )
+        return False
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
@@ -72,8 +88,10 @@ def _build_target_template(cfg: dict) -> tuple[str, str | None]:
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Migrate old entry."""
-    if entry.version >= 2:
+    if entry.version >= 3:
         return True
+    if entry.version == 2:
+        return _migrate_v2_to_v3(hass, entry)
 
     # v1 -> v2 : consigne fixe, entité de consigne et écart fusionnés dans un
     # unique template, seule source de vérité de la consigne normale.
@@ -91,4 +109,26 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _LOGGER.info("%s migré en v2, consigne : %s", entry.title, template)
     if warning:
         _LOGGER.warning("%s : %s", entry.title, warning)
+    return _migrate_v2_to_v3(hass, entry)
+
+
+def _migrate_v2_to_v3(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """v2 -> v3 : l'appareil est piloté directement, plus par des actions."""
+    data = {**entry.data}
+    options = {**entry.options}
+    for cfg in (data, options):
+        for key in (LEGACY_ACTION_ON, LEGACY_ACTION_OFF):
+            cfg.pop(key, None)
+
+    hass.config_entries.async_update_entry(entry, data=data, options=options, version=3)
+    if not {**data, **options}.get(CONF_DEVICE_ENTITY):
+        # Les séquences supprimées ne peuvent pas être converties en entité :
+        # elles pouvaient piloter n'importe quoi, y compris sans entité du tout
+        _LOGGER.warning(
+            "%s migré en v3 mais sans entité déshumidificateur : renseignez-la "
+            "dans les options, l'entrée ne peut plus rien piloter sans elle",
+            entry.title,
+        )
+    else:
+        _LOGGER.info("%s migré en v3, pilotage direct de l'appareil", entry.title)
     return True
