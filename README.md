@@ -89,6 +89,8 @@ L'attente ne s'applique qu'à un vrai démarrage de HA, pas au rechargement de l
 
 Ce qui est restauré d'une session à l'autre, c'est la **consigne** et le **mode**, pas l'humidité mesurée : après une coupure longue, la dernière mesure connue peut dater d'heures, et régler un appareil dessus serait exactement ce que le garde-fou du capteur cherche à éviter.
 
+La consigne est restaurée **même lorsqu'une entité de consigne est configurée**, et c'est important : la valeur restaurée est justement la dernière valeur connue de cette entité, puisqu'elle y est recopiée à chaque changement. Si l'entité n'est pas encore lisible au démarrage, la régulation part donc de la dernière consigne réelle plutôt que du défaut de configuration. Sans cela, une entité illisible au mauvais moment ferait réguler sur une valeur que personne n'a choisie, et rien ne la corrigerait tant que l'entité ne changerait pas de valeur. L'attribut `normal_humidity` expose cette consigne hors boost (l'attribut standard `humidity` affiche celle du boost quand il est engagé).
+
 ### Entité de consigne
 
 Si une entité de consigne est configurée, sa valeur (bornée par humidité min/max) devient la consigne de l'hygrostat et est suivie en continu :

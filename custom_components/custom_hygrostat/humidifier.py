@@ -254,11 +254,19 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             tpl_info.async_refresh()
 
         if (old_state := await self.async_get_last_state()) is not None:
-            # L'entité de consigne, si configurée, prime sur la valeur restaurée
-            if (
-                (h := old_state.attributes.get("humidity")) is not None
-                and not self._target_entity_id
-            ):
+            # La consigne restaurée est TOUJOURS reprise, entité de consigne
+            # comprise : c'est justement la dernière valeur connue de cette
+            # entité, puisqu'on la recopie ici à chaque changement. Repartir du
+            # défaut de configuration ferait réguler sur une consigne que
+            # l'utilisateur n'a jamais choisie tant que l'entité n'est pas
+            # lisible (elle ne l'est pas forcément au démarrage, et rien ne la
+            # relit ensuite si sa valeur n'a pas bougé).
+            h = old_state.attributes.get("normal_humidity")
+            if h is None and old_state.attributes.get("mode") != self.MODE_BOOST:
+                # Entités d'avant l'ajout de "normal_humidity" : l'attribut
+                # standard fait l'affaire tant que le boost n'était pas engagé
+                h = old_state.attributes.get("humidity")
+            if h is not None:
                 self._target_humidity = h
             if old_state.attributes.get("mode") in self._attr_available_modes:
                 self._attr_mode = old_state.attributes["mode"]
@@ -371,6 +379,10 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             "primary_humidity": self._primary_humidity,
             "secondary_humidity": self._secondary_humidity,
             "boost_active": self._attr_mode == self.MODE_BOOST,
+            # La consigne hors boost : l'attribut standard "humidity" affiche
+            # celle du boost quand il est engagé, elle ne peut donc pas servir
+            # à restaurer la consigne normale au redémarrage
+            "normal_humidity": self._target_humidity,
             "enabled": self._enabled,
             "error_active": self._error,
             "manual_off_until": self._manual_off_until,

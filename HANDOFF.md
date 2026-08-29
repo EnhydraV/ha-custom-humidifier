@@ -561,10 +561,111 @@ que `SENSOR_STALE_TIMEOUT` cherche a eviter.
   NS06 mesure 0 W depuis deux jours ET la prise elle-meme decroche en boucle, donc
   le power cycle n'y reglera probablement rien.
 
+### Sequence d'extinction : laisser l'appareil inoffensif (2026-08-29)
+
+Probleme observe au redemarrage de HA de 14:01 : deux DryFy sont revenus en ligne
+en publiant leur propre etat restaure (`on`), et ont donc deshumidifie pendant
+~6 minutes alors que la consigne etait deja atteinte. L'hygrostat n'y etait pour
+rien -- le journal montre la regulation commandant l'arret a 14:01:45, PUIS
+l'appareil publiant `on` a 14:01:47. La correction a pris 6 min a cause du
+`min_cycle_duration` de 5 min pose le matin meme (il etait a 0 avant).
+
+Point de vocabulaire, source de confusion : il y a DEUX modes `boost` distincts.
+Celui de l'hygrostat (consigne forcee, pilote par une entite timer) et celui du
+DryFy lui-meme (`available_modes: ['auto', 'boost']`), que nos actions
+d'allumage posent explicitement. Ce qui fait tourner la machine au boot, ce
+n'est pas le mode mais son etat `on` restaure : sa consigne interne est a 50 %
+pour un ambiant de ~70 %, donc meme en `auto` elle est en demande permanente.
+L'hygrostat est la SEULE chose qui arrete ces machines.
+
+**Mesure faite en conditions reelles (Cave NW)** : consigne interne portee a 80,
+ambiant 71, mode `boost` -> le compresseur tire **456 a 468 W pendant 3 minutes**.
+Le mode boost IGNORE donc la consigne interne. C'est ce qui rend la parade
+possible.
+
+Nouvelle sequence d'extinction, appliquee aux 4 entries (l'ordre compte, les
+ecritures doivent se faire pendant que l'appareil est ENCORE alimente, sinon les
+appareils Tuya les ignorent) :
+
+1. `humidifier.set_mode` -> `auto`
+2. `humidifier.set_humidity` -> **80** (le `max_humidity` declare par les DryFy)
+3. `humidifier.turn_off`
+
+L'allumage est inchange : il passe en `boost`, qui ecrase la consigne. Au
+prochain redemarrage autonome, l'appareil restaure son etat allume mais ne fait
+rien, sa regulation interne etant deja satisfaite. Anciennes actions dans
+`$SUPERCLAUDE_SCRATCH/turnoff-backup-<horodatage>.json`.
+
+**Pourquoi le `turn_off` final est INDISPENSABLE** (piege : il parait redondant,
+l'appareil ne deshumidifiant deja plus). L'entite `device_entity` sert a savoir
+si la machine tourne. Si l'appareil reste alimente, son entite reste `on` et
+republie ses attributs toutes les ~3 s, ce qui declenche
+`_async_device_changed` : la croyance dit `off`, l'entite dit `on`, l'etat
+precedent etait `on` -> conclusion « allumage manuel », resynchronisation a `on`,
+levee du blocage, puis la regulation reeteint. Boucle infinie de quelques
+secondes. NE PAS retirer ce `turn_off` sans avoir d'abord donne a l'integration
+un autre moyen de distinguer ALIMENTE de EN MARCHE (piste discutee : un template
+optionnel d'etat de marche, par exemple
+`{{ is_state_attr('humidifier.x', 'mode', 'boost') }}`, qui remplacerait la
+lecture on/off ; ~30 lignes, non fait).
+
+Piste ECARTEE : aligner la consigne interne des DryFy sur celle de l'hygrostat.
+Le capteur interne derive trop. Mesure sur 3 jours (Cave NW, n=4887) : ecart
+median interne moins externe de **+5,0 en marche** (il est dans le flux
+d'aspiration) contre +0,0 a l'arret, avec des aberrations jusqu'a -44. Il
+couperait donc avant l'hygrostat. C'est precisement pour ca que l'integration
+existe.
+
+L'entite `fan` des DryFy n'est PAS un reglage independant : la mettre a l'arret
+eteint tout (deshumidification, ventilation, oscillation). Elle ne sert qu'a la
+vitesse (2 crans : 50 ou 100 %) et a l'oscillation, pendant que la machine
+tourne. Les actions d'allumage exploitent deja les deux.
+
+### Consigne perdue au demarrage (2026-08-29, incident + correctif)
+
+Incident : apres un redemarrage de HA, les 4 hygrostats ont demarre avec une
+consigne de **55** (le defaut de leur config) au lieu des 75 publies par
+`sensor.consigne_deshumidificateurs`. A 55 de consigne pour 58-69 d'ambiant, les
+quatre machines ont demarre -- decision CORRECTE sur une donnee FAUSSE. Trace :
+
+    15:27:37.674  sensor.consigne_deshumidificateurs = 75
+    15:27:42.507  dh_salle_de_bain  cible=55.0   <- defaut de config
+    15:27:51      dh_salle_de_bain  on
+    15:29:50      (2e demarrage)    cible=75.0   <- lu correctement
+
+Cause : `async_added_to_hass` refusait de restaurer la consigne des lors qu'une
+entite de consigne etait configuree (`and not self._target_entity_id`), au motif
+que l'entite prime. Raisonnement FAUX : la valeur restauree EST la derniere
+valeur connue de cette entite, puisque `_update_target` l'y recopie a chaque
+changement. En la jetant, on repart du defaut de config, et si l'entite n'est pas
+lisible a cet instant precis, RIEN ne la relit ensuite -- le suivi ne reagit
+qu'aux changements, et le capteur etait deja a 75 et y est reste.
+
+Correctif (propose par l'utilisateur) : restaurer TOUJOURS la consigne. L'entite
+ecrase la valeur des qu'elle est lisible ; sinon on garde la derniere consigne
+reelle. Piege traite au passage : l'attribut standard `humidity` publie la
+consigne du BOOST quand il est engage, le restaurer tel quel corromprait la
+consigne normale. D'ou un nouvel attribut **`normal_humidity`** (consigne hors
+boost) utilise en priorite a la restauration, avec repli sur `humidity`
+uniquement si le mode restaure n'etait pas `boost`.
+
+Piste ECARTEE : refleter la consigne du helper dans la consigne interne de
+l'appareil. Le role de cette derniere n'est pas d'etre juste mais d'etre
+INATTEIGNABLE (80 = ne rien faire). A 75 l'appareil assecherait jusqu'a ~70 reels
+tout seul, avec son capteur biaise de +5, et couperait meme avant l'hygrostat.
+
+Reste non traite : au demarrage, le chemin « rechargement » (`hass.state ==
+RUNNING`) n'arme AUCUNE attente d'entrees, contrairement au chemin
+`EVENT_HOMEASSISTANT_START`. C'est ce chemin qui a ete emprunte lors de
+l'incident (`startup_grace_until` etait vide). La restauration de la consigne
+couvre le symptome ; la cause exacte de la course n'a pas ete identifiee.
+
 ### Reste a faire
 
-- Redeployer le code (le champ `power_switch` n'existe pas encore sur l'instance)
-  puis renseigner la prise sur DH SDB NE, le cas le plus prometteur.
+- `min_cycle_duration` est a 5 min sur les 4 entries (il etait a 0). Consequence
+  mesuree : une correction d'etat au boot peut attendre jusqu'a 5 min. Proposition
+  non tranchee : descendre a 2 min, ou exempter du cycle minimum le cas
+  « l'appareil s'est rallume seul alors que la regulation le veut a l'arret ».
 - Trois DryFy sur quatre sont injoignables (SAM d'ete, SDB NE, et Cave NW depuis
   le 28/08 22h35 UTC) : intervention physique necessaire.
 - Option de repli si le power cycle ne suffit pas : retrograder tuya-local en
