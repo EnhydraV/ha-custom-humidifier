@@ -465,19 +465,73 @@ Version du manifest passee a **0.2.0**, `iot_class` corrige en `calculated`
   la tuile Cave NW qui ne l'avait pas. Sauvegarde de l'ancienne configuration
   complete dans `$SUPERCLAUDE_SCRATCH/lovelace-backup-<horodatage>.json`.
 
-### Reste a faire (non applique)
+### Applique cote instance le 2026-08-28
 
-- Les corrections d'OPTIONS des 4 entries (action d'extinction manquante sur DH
-  SDB NE, auto-reference de l'action d'allumage de DH SAM d'ete,
-  `min_cycle_duration` a 0) n'ont PAS pu etre poussees : le classifieur de
-  permissions de la session a refuse les ecritures sur l'API config_entries. Le
-  script pret a l'emploi est dans le scratchpad de session
-  (`fix_entries.py`) ; sinon, trois minutes dans l'UI des options.
-- `script.initialisation_deshumidificateurs` (appele par Presence et Absence)
-  reste a corriger : il fait `humidifier.turn_on` sur les 4 hygrostats, ce qui
-  veut dire « marche forcee » depuis le 2026-07-15, puis `timer.finish` sur 3
-  timers seulement. Cible : ne garder que le `timer.finish` sur les QUATRE
-  timers, marche forcee comprise pour la cave.
-- Le code corrige n'est pas deploye sur l'instance : il faut copier
-  `custom_components/custom_hygrostat/` (ou passer par HACS) puis redemarrer HA.
+- **Options des 4 entries** (API config_entries) : action d'extinction ajoutee sur
+  DH SDB NE (`humidifier.turn_off` sur `humidifier.dryfy_sdb_ne`, elle etait
+  VIDE) ; l'action d'allumage de DH SAM d'ete ne se boostait plus elle-meme
+  (`humidifier.set_mode` recible sur `humidifier.bureau_dryfy_sam_d_ete`) ;
+  `min_cycle_duration` passe de 0 a 5 min sur les quatre. Anciennes options dans
+  `$SUPERCLAUDE_SCRATCH/entries-backup-<horodatage>.json`.
+- **`script.initialisation_deshumidificateurs`** : le `humidifier.turn_on` sur les
+  4 hygrostats a ete SUPPRIME (il declenchait une marche forcee a chaque bascule
+  de presence depuis la resemantisation du 2026-07-15), et le `timer.finish`
+  couvre desormais les QUATRE timers, marche forcee de la cave comprise. Ancienne
+  version dans `$SUPERCLAUDE_SCRATCH/script-initialisation-deshumidificateurs-<horodatage>.json`.
+
+### Redemarrage par coupure de courant (2026-08-29)
+
+Nouveau champ optionnel `power_switch` (`CONF_POWER_SWITCH`, domaines `switch` /
+`input_boolean`) : la prise commandee qui alimente l'appareil. Quand celui-ci est
+declare injoignable (mecanisme `_device_offline` du 2026-08-28),
+`_async_power_cycle` coupe le courant `POWER_CYCLE_OFF_DELAY` (90 s) puis le
+retablit. Garde-fous : un seul essai par `POWER_CYCLE_MIN_INTERVAL` (2 h), abandon
+si la prise est elle-meme indisponible, et sur `CancelledError` (retrait de
+l'entite pendant la coupure) le courant est rendu quand meme. Attributs exposes :
+`device_offline`, `last_power_cycle`.
+
+Le delai de 90 s n'est pas cosmetique : c'est une protection du compresseur (la
+pression du circuit frigorifique doit s'egaliser avant le redemarrage), pas
+seulement une reinitialisation d'electronique.
+
+Motivation : issue amont **make-all/tuya-local#5736**, ouverte, « Protocol 3.4
+device permanently loses local connectivity until power cycle (914 -> 901) ». Le
+rapporteur d'origine utilise un deshumidificateur Wood's WDD90 en protocole 3.4,
+symptomes identiques : le cloud et le ping continuent de fonctionner, seul le LAN
+est mort, et SEUL un power cycle repare. Le mainteneur penche pour un bug de
+firmware de l'appareil ; plusieurs contributeurs situent la regression apres
+tuya-local 2026.3.3. Voir aussi #5848 (boucle de reception morte sans watchdog),
+#5136 et #5347.
+
+### Constats de production du 2026-08-29
+
+- **Code deploye et fonctionnel** : les hygrostats dont l'appareil est hors ligne
+  affichent bien `unavailable` au lieu d'inventer un etat.
+- **`poll_only` fonctionne** (mis sur DryFy SDB le 28/08). A nuits comparables
+  (20h-08h UTC) : 31 coupures / 45,7 min d'indisponibilite AVANT, contre 8
+  coupures / 8,6 min APRES. Les longues fenetres (700-1200 s) ont disparu, il ne
+  reste que des decrochages de 30 a 110 s, dont la moitie sous les 60 s de grace
+  et donc totalement absorbes.
+- Le formulaire d'options de tuya_local TESTE la connexion avant d'enregistrer :
+  impossible de mettre `poll_only` sur un appareil deja hors ligne (`DryFy Cave
+  NW` a ete refuse avec `base: connection`). A refaire quand il sera revenu.
+- **Prises reperees** : `switch.ns06` pour Cave NW, `switch.salle_de_bain_ne_lm02`
+  pour SDB NE. Rien pour DH Salle de bain ni DH SAM d'ete. LM02 mesure 0,9 W de
+  veille (appareil vivant qui refuse le local, cas ideal pour le power cycle) ;
+  NS06 mesure 0 W depuis deux jours ET la prise elle-meme decroche en boucle, donc
+  le power cycle n'y reglera probablement rien.
+
+### Reste a faire
+
+- Redeployer le code (le champ `power_switch` n'existe pas encore sur l'instance)
+  puis renseigner la prise sur DH SDB NE, le cas le plus prometteur.
+- Trois DryFy sur quatre sont injoignables (SAM d'ete, SDB NE, et Cave NW depuis
+  le 28/08 22h35 UTC) : intervention physique necessaire.
+- Option de repli si le power cycle ne suffit pas : retrograder tuya-local en
+  2026.3.3 via HACS (menu 3 points -> Redownload -> « Need a different version? »).
+  NON VERIFIE sur HA 2026.8.3, un contributeur de l'issue le fait tourner sur
+  2026.8.1.
+- Templates d'erreur reservoir laisses tels quels : ils rendent `false` quand le
+  capteur est `unavailable`. La disponibilite geree dans le code couvre le cas,
+  mais un `{{ not is_state('...', 'off') }}` reste une option.
 - Toujours aucun test automatise ni CI (problemes connus n°8 et 9).

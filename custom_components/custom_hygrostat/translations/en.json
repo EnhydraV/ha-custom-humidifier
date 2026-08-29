@@ -22,7 +22,8 @@
           "target_entity": "Setpoint entity (optional, drives the target humidity)",
           "boost_timer": "Boost timer (timer entity, active = boost)",
           "boost_humidity": "Boost target humidity",
-          "device_entity": "Dehumidifier entity (optional: internal sensor + manual detection)"
+          "device_entity": "Dehumidifier entity (optional: internal sensor + manual detection)",
+          "power_switch": "Power switch (optional: power-cycles the device when it stops responding)"
         }
       }
     },
@@ -57,7 +58,8 @@
           "target_entity": "Setpoint entity (optional, drives the target humidity)",
           "boost_timer": "Boost timer (timer entity, active = boost)",
           "boost_humidity": "Boost target humidity",
-          "device_entity": "Dehumidifier entity (optional: internal sensor + manual detection)"
+          "device_entity": "Dehumidifier entity (optional: internal sensor + manual detection)",
+          "power_switch": "Power switch (optional: power-cycles the device when it stops responding)"
         }
       }
     },

@@ -23,6 +23,10 @@ CONF_ENABLE_TEMPLATE = "enable_template"
 CONF_ERROR_TEMPLATE = "error_template"
 # Période de grâce au démarrage de HA avant de piloter l'appareil (secondes)
 CONF_STARTUP_DELAY = "startup_delay"
+# Prise commandant l'alimentation de l'appareil, pour le redemarrer quand il
+# ne repond plus (certains modules Tuya refusent les connexions locales
+# jusqu'a une coupure de courant)
+CONF_POWER_SWITCH = "power_switch"
 
 DEFAULT_NAME = "Custom Hygrostat"
 DEFAULT_TOLERANCE = 3
@@ -47,3 +51,11 @@ TEMPLATE_CLEAR_DELAY = timedelta(seconds=60)
 # Capteur d'humidité indisponible depuis ce délai : la dernière valeur connue
 # est abandonnée (et l'appareil coupé s'il n'y a plus aucune mesure)
 SENSOR_STALE_TIMEOUT = timedelta(minutes=30)
+
+# Coupure de courant appliquée par la prise pour redémarrer un appareil muet.
+# Assez longue pour que l'électronique se réinitialise et que la pression du
+# circuit frigorifique s'égalise avant le redémarrage du compresseur.
+POWER_CYCLE_OFF_DELAY = timedelta(seconds=90)
+# Deux redémarrages ne peuvent pas s'enchaîner : si l'appareil ne revient pas,
+# c'est une panne, pas un blocage, et rien ne sert de le maltraiter en boucle
+POWER_CYCLE_MIN_INTERVAL = timedelta(hours=2)

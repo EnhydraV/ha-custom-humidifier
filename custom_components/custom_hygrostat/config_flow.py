@@ -34,6 +34,7 @@ from .const import (
     CONF_ENABLE_TEMPLATE,
     CONF_ERROR_TEMPLATE,
     CONF_STARTUP_DELAY,
+    CONF_POWER_SWITCH,
     DEFAULT_NAME,
     DEFAULT_TOLERANCE,
     DEFAULT_MIN_HUMIDITY,
@@ -160,6 +161,14 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                 selector.EntitySelectorConfig(domain="humidifier")
             ),
             vol.Optional(
+                CONF_POWER_SWITCH,
+                description={"suggested_value": defaults.get(CONF_POWER_SWITCH)},
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(
+                    domain=["switch", "input_boolean"]
+                )
+            ),
+            vol.Optional(
                 CONF_ENABLE_TEMPLATE,
                 default=defaults.get(CONF_ENABLE_TEMPLATE, ""),
             ): selector.TemplateSelector(),
@@ -241,7 +250,12 @@ class CustomHygrostatConfigFlow(ConfigFlow, domain=DOMAIN):
             if not errors:
                 # Champ vidé = None explicite, sinon la fusion data/options
                 # ressusciterait l'ancienne valeur
-                for conf in (CONF_TARGET_ENTITY, CONF_BOOST_TIMER, CONF_DEVICE_ENTITY):
+                for conf in (
+                    CONF_TARGET_ENTITY,
+                    CONF_BOOST_TIMER,
+                    CONF_DEVICE_ENTITY,
+                    CONF_POWER_SWITCH,
+                ):
                     user_input.setdefault(conf, None)
                 await self.async_set_unique_id(
                     f"{DOMAIN}_{user_input[CONF_NAME].lower().replace(' ', '_')}"
@@ -275,7 +289,12 @@ class CustomHygrostatOptionsFlow(OptionsFlow):
         if user_input is not None:
             errors = _validate(self.hass, user_input, self.config_entry)
             if not errors:
-                for conf in (CONF_TARGET_ENTITY, CONF_BOOST_TIMER, CONF_DEVICE_ENTITY):
+                for conf in (
+                    CONF_TARGET_ENTITY,
+                    CONF_BOOST_TIMER,
+                    CONF_DEVICE_ENTITY,
+                    CONF_POWER_SWITCH,
+                ):
                     user_input.setdefault(conf, None)
                 return self.async_create_entry(title="", data=user_input)
 

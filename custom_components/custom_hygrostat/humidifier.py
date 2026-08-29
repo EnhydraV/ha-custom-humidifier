@@ -1,6 +1,7 @@
 """Custom dehumidifier-only hygrostat with on/off actions and boost timer."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import timedelta
 
@@ -47,6 +48,7 @@ from .const import (
     CONF_ENABLE_TEMPLATE,
     CONF_ERROR_TEMPLATE,
     CONF_STARTUP_DELAY,
+    CONF_POWER_SWITCH,
     DEFAULT_TOLERANCE,
     DEFAULT_MIN_HUMIDITY,
     DEFAULT_MAX_HUMIDITY,
@@ -55,6 +57,8 @@ from .const import (
     DEFAULT_MIN_CYCLE_MINUTES,
     DEFAULT_STARTUP_DELAY_SECONDS,
     DEVICE_OFFLINE_GRACE,
+    POWER_CYCLE_OFF_DELAY,
+    POWER_CYCLE_MIN_INTERVAL,
     TEMPLATE_CLEAR_DELAY,
     SENSOR_STALE_TIMEOUT,
     MANUAL_OFF_HOLD,
@@ -103,6 +107,7 @@ async def async_setup_entry(
                 boost_timer_entity_id=cfg.get(CONF_BOOST_TIMER),
                 boost_humidity=cfg.get(CONF_BOOST_HUMIDITY, DEFAULT_BOOST_HUMIDITY),
                 device_entity_id=cfg.get(CONF_DEVICE_ENTITY),
+                power_switch_entity_id=cfg.get(CONF_POWER_SWITCH),
                 startup_delay_seconds=cfg.get(
                     CONF_STARTUP_DELAY, DEFAULT_STARTUP_DELAY_SECONDS
                 ),
@@ -141,6 +146,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         boost_timer_entity_id,
         boost_humidity,
         device_entity_id,
+        power_switch_entity_id,
         startup_delay_seconds,
         enable_template,
         error_template,
@@ -160,6 +166,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         self._boost_timer_entity_id = boost_timer_entity_id
         self._boost_humidity = boost_humidity
         self._device_entity_id = device_entity_id
+        self._power_switch_entity_id = power_switch_entity_id
         self._startup_delay = timedelta(seconds=startup_delay_seconds)
 
         self._attr_available_modes = [self.MODE_NORMAL, self.MODE_BOOST]
@@ -177,6 +184,9 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         # Appareil injoignable (confirmé après DEVICE_OFFLINE_GRACE)
         self._device_offline = False
         self._device_offline_remove = None
+        # Redemarrage par coupure de courant (prise optionnelle)
+        self._last_power_cycle = None
+        self._power_cycle_task = None
         # Temporisations de levée des conditions d'erreur / d'activation
         self._template_clear_remove = {}
         self._sensor_stale_remove = None
@@ -191,6 +201,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         self.async_on_remove(self._clear_manual_hold)
         self.async_on_remove(self._clear_startup_grace)
         self.async_on_remove(self._clear_device_offline)
+        self.async_on_remove(self._cancel_power_cycle)
         self.async_on_remove(self._cancel_template_clears)
         self.async_on_remove(self._clear_sensor_watchdog)
 
@@ -356,6 +367,8 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             "error_active": self._error,
             "manual_off_until": self._manual_off_until,
             "startup_grace_until": self._startup_grace_until,
+            "device_offline": self._device_offline,
+            "last_power_cycle": self._last_power_cycle,
         }
 
     async def async_turn_on(self, **kwargs):
@@ -638,6 +651,11 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
                 self._device_entity_id,
             )
             self.async_write_ha_state()
+            # Dernier recours : couper puis rendre le courant a l'appareil
+            if self._power_switch_entity_id and self._power_cycle_task is None:
+                self._power_cycle_task = self.hass.async_create_task(
+                    self._async_power_cycle()
+                )
 
         self._device_offline_remove = async_call_later(
             self.hass, DEVICE_OFFLINE_GRACE.total_seconds(), _offline
@@ -649,6 +667,81 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             self._device_offline_remove()
             self._device_offline_remove = None
         self._device_offline = False
+
+    @callback
+    def _cancel_power_cycle(self):
+        if self._power_cycle_task is not None:
+            self._power_cycle_task.cancel()
+            self._power_cycle_task = None
+
+    async def _async_power_cycle(self):
+        """Coupe puis rend le courant a un appareil qui ne repond plus.
+
+        Certains modules Tuya refusent toute connexion locale jusqu'a une
+        coupure d'alimentation, alors qu'ils repondent encore au ping et au
+        cloud (make-all/tuya-local#5736).
+        """
+        try:
+            now = dt_util.utcnow()
+            if (
+                self._last_power_cycle is not None
+                and now - self._last_power_cycle < POWER_CYCLE_MIN_INTERVAL
+            ):
+                # L'appareil n'est pas revenu du precedent essai : c'est une
+                # panne, insister ne ferait que le maltraiter
+                _LOGGER.debug(
+                    "Redémarrage de %s ignoré : dernier essai à %s",
+                    self._device_entity_id,
+                    self._last_power_cycle,
+                )
+                return
+            switch = self.hass.states.get(self._power_switch_entity_id)
+            if switch is None or switch.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+                _LOGGER.warning(
+                    "Redémarrage impossible : la prise %s est indisponible",
+                    self._power_switch_entity_id,
+                )
+                return
+
+            self._last_power_cycle = now
+            domain = self._power_switch_entity_id.split(".")[0]
+            _LOGGER.warning(
+                "%s muet : coupure de %s via %s",
+                self._device_entity_id,
+                POWER_CYCLE_OFF_DELAY,
+                self._power_switch_entity_id,
+            )
+            self.async_write_ha_state()
+            await self.hass.services.async_call(
+                domain,
+                "turn_off",
+                {"entity_id": self._power_switch_entity_id},
+                blocking=True,
+                context=self._context,
+            )
+            await asyncio.sleep(POWER_CYCLE_OFF_DELAY.total_seconds())
+            await self.hass.services.async_call(
+                domain,
+                "turn_on",
+                {"entity_id": self._power_switch_entity_id},
+                blocking=True,
+                context=self._context,
+            )
+            _LOGGER.info("Courant rendu à %s", self._power_switch_entity_id)
+        except asyncio.CancelledError:
+            # Entite retiree pendant la coupure : on rend le courant coute que
+            # coute, sinon l'appareil resterait eteint sans personne pour agir
+            self.hass.async_create_task(
+                self.hass.services.async_call(
+                    self._power_switch_entity_id.split(".")[0],
+                    "turn_on",
+                    {"entity_id": self._power_switch_entity_id},
+                    blocking=False,
+                )
+            )
+            raise
+        finally:
+            self._power_cycle_task = None
 
     async def _async_handle_manual_switch(self, is_on):
         # L'appareil a changé d'état sans qu'on l'ait commandé

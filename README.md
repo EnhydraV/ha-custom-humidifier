@@ -35,6 +35,7 @@ Tout se configure via l'interface (config flow + options flow). L'intégration e
 | Timer de marche forcée | Entité `timer` optionnelle qui pilote le mode `boost` |
 | Consigne en marche forcée | Consigne appliquée pendant le mode `boost` (défaut 50 %) |
 | Entité déshumidificateur | Entité `humidifier` optionnelle du fabricant : capteur interne (moyenné) + détection manuelle |
+| Prise d'alimentation | `switch` ou `input_boolean` optionnel : coupure de courant automatique quand l'appareil ne répond plus |
 | Condition d'activation | Template optionnel ; `false` = appareil coupé (vide = toujours `true`) |
 | Condition d'erreur | Template optionnel ; `true` = appareil coupé (vide = toujours `false`) |
 
@@ -124,6 +125,21 @@ L'hygrostat ne peut pas être plus fiable que l'entité qu'il pilote. Trois gard
 - **Retour de l'appareil = resynchronisation, pas action manuelle** : un état qui réapparaît après `unknown` / `unavailable` n'est jamais interprété comme un geste humain (donc ni blocage de 2 h, ni levée de blocage) ; l'hygrostat se recale silencieusement puis laisse la régulation trancher.
 
 Les coupures de sécurité (condition d'erreur, condition d'activation `false`, `turn_off`) sont envoyées **même si l'hygrostat se croit déjà à l'arrêt**, dès lors que l'appareil, lui, se déclare en marche.
+
+### Redémarrage par coupure de courant
+
+Certains appareils cessent d'accepter les connexions locales et ne reviennent que par une coupure d'alimentation, tout en continuant de répondre au ping et au cloud (le cas est documenté pour tuya-local : [issue #5736](https://github.com/make-all/tuya-local/issues/5736)). Renseignez alors le champ **Prise d'alimentation** avec la prise commandée qui alimente l'appareil : dès qu'il est déclaré injoignable, l'hygrostat coupe le courant 90 secondes puis le rétablit.
+
+Garde-fous :
+
+- **Un seul essai toutes les 2 heures.** Si l'appareil ne revient pas après une coupure, c'est une panne et non un blocage : insister ne ferait que le maltraiter.
+- **Rien ne se passe si la prise elle-même est indisponible**, et le champ vide désactive complètement la fonction.
+- **90 secondes hors tension**, de quoi réinitialiser l'électronique et laisser la pression du circuit frigorifique s'égaliser avant que le compresseur ne reparte. Ajustez `POWER_CYCLE_OFF_DELAY` dans `const.py` si votre appareil demande davantage.
+- Si l'entité est retirée pendant la coupure (rechargement des options, arrêt de HA), **le courant est rendu quand même** : l'appareil ne peut pas rester éteint faute de quelqu'un pour le rallumer.
+
+Attributs exposés : `device_offline` et `last_power_cycle`.
+
+Attention : l'appareil est injoignable, donc son état réel est inconnu au moment de la coupure. Si le vôtre ne redémarre pas seul après un retour de courant, vérifiez son réglage de mémoire d'état (les prises Tuya exposent souvent un `power_outage_memory`).
 
 ### Conditions bloquantes : temporisation à la levée
 
