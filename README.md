@@ -31,7 +31,7 @@ Tout se configure via l'interface (config flow + options flow). L'intégration e
 | Tolérance sèche | Arrêt quand humidité ≤ cible − tolérance sèche |
 | Humidité min / max | Bornes réglables de la consigne |
 | Durée min de cycle | Empêche les cycles marche/arrêt trop rapprochés |
-| Délai de stabilisation au démarrage | Période de grâce après un redémarrage de HA pendant laquelle l'appareil n'est ni allumé ni éteint (défaut 120 s, 0 = désactivé) |
+| Attente maximale au démarrage | Plafond de l'attente des capteurs après un redémarrage de HA (défaut 120 s, 0 = régulation immédiate) |
 | Timer de marche forcée | Entité `timer` optionnelle qui pilote le mode `boost` |
 | Consigne en marche forcée | Consigne appliquée pendant le mode `boost` (défaut 50 %) |
 | Entité déshumidificateur | Entité `humidifier` optionnelle du fabricant : capteur interne (moyenné) + détection manuelle |
@@ -71,17 +71,23 @@ L'hygrostat pilote l'appareil à l'aveugle via les actions : il ne sait pas ce q
 
 ### Stabilisation au démarrage
 
-Au redémarrage de Home Assistant, les entités se réhydratent dans le désordre : le capteur, le capteur interne, la consigne et les templates peuvent faire varier rapidement la décision de régulation, et l'entité déshumidificateur qui revient de `unavailable` risque d'être prise pour une action manuelle.
+Au redémarrage de Home Assistant, les entités se réhydratent dans le désordre. Décider avec une consigne pas encore chargée ou des templates pas encore évalués donne une mauvaise décision, appliquée à un vrai appareil.
 
-Pendant le **délai de stabilisation** (configurable, défaut 120 s) démarré à l'événement *Home Assistant started* :
+L'hygrostat n'attend donc pas une durée fixe, mais **que chaque entrée configurée ait publié une valeur exploitable** : le capteur d'humidité, l'entité de consigne, l'entité déshumidificateur, et les deux templates. Dès que la dernière est prête, un contrôle forcé applique la décision. En pratique, cela se compte en secondes.
 
-- la régulation n'allume ni n'éteint l'appareil ; à l'échéance, un contrôle forcé applique la décision sur des valeurs stabilisées (attribut `startup_grace_until`) ;
+Le champ **Attente maximale au démarrage** (défaut 120 s) n'est qu'un garde-fou : si une entrée ne revient jamais, la régulation reprend quand même à l'échéance, et le journal indique lesquelles manquaient. `0` désactive complètement l'attente.
+
+Pendant cette attente :
+
+- la régulation n'allume ni n'éteint l'appareil (attributs `startup_grace_until` pour l'échéance du garde-fou et `pending_inputs` pour ce qui manque encore) ;
 - les changements d'état de l'entité déshumidificateur resynchronisent l'hygrostat **silencieusement** : pas de boost fantôme ni de blocage 2 h au démarrage ;
 - les coupures de sécurité restent immédiates : condition d'erreur, `humidifier.turn_off` ;
 - le boost n'est pas concerné (un timer restauré ré-engage la marche forcée immédiatement) ;
-- `humidifier.turn_on` sur l'hygrostat lève le délai et engage la marche forcée (action explicite de l'utilisateur).
+- `humidifier.turn_on` sur l'hygrostat lève l'attente et engage la marche forcée (action explicite de l'utilisateur).
 
-Le délai ne s'applique qu'à un vrai démarrage de HA, pas au rechargement de l'intégration (modification des options).
+L'attente ne s'applique qu'à un vrai démarrage de HA, pas au rechargement de l'intégration (modification des options).
+
+Ce qui est restauré d'une session à l'autre, c'est la **consigne** et le **mode**, pas l'humidité mesurée : après une coupure longue, la dernière mesure connue peut dater d'heures, et régler un appareil dessus serait exactement ce que le garde-fou du capteur cherche à éviter.
 
 ### Entité de consigne
 

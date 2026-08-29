@@ -503,6 +503,46 @@ firmware de l'appareil ; plusieurs contributeurs situent la regression apres
 tuya-local 2026.3.3. Voir aussi #5848 (boucle de reception morte sans watchdog),
 #5136 et #5347.
 
+### Attente des entrees au demarrage (2026-08-29, remplace la periode de grace)
+
+Constat qui a motive le changement : au redemarrage du 29/08 10:05, le DryFy SAM
+d'ete a restaure SON PROPRE etat (on + mode boost) apres son power cycle.
+L'hygrostat a resynchronise `_active` sur la realite et affiche donc `on` a 64 %
+pour une consigne de 75 -- correct, mais la periode de grace de 120 s a laisse
+l'appareil tourner pour rien. Coupure a 10:07:33, exactement a l'echeance.
+
+Le delai FIXE a donc ete remplace par une attente des ENTREES. `_arm_startup_grace`
+construit `_pending_inputs` a partir de ce qui est configure (`sensor`, `target`,
+`device`, `enable`, `error`) ; chaque callback appelle `_input_ready(<nom>)` quand
+il obtient une valeur exploitable, et la derniere levee declenche
+`_async_control(force=True)`. En pratique : quelques secondes au lieu de deux
+minutes. `_in_startup_grace` vaut desormais `self._pending_inputs is not None`.
+
+`startup_delay` n'est plus qu'un PLAFOND (le libelle du champ a ete change en
+consequence dans strings/fr/en) : a l'echeance, la regulation reprend quand meme et
+le journal liste les entrees restees muettes. `0` = aucune attente.
+
+Trois pieges traites, a ne pas casser en refactorant :
+
+1. **Templates evalues AVANT `EVENT_HOMEASSISTANT_START`** (`async_refresh()` dans
+   `async_added_to_hass`) : leur passage pret serait perdu et l'attente durerait
+   jusqu'au plafond. D'ou `_inputs_seen`, alimente par `_input_ready` meme quand
+   aucune attente n'est armee, et soustrait du `pending` a l'armement. Si tout a
+   deja parle, aucune attente n'est armee du tout.
+2. **`_async_device_changed` capture `in_grace` EN TETE de callback**, avant
+   `_input_ready("device")`. Sinon lever l'attente sur cette meme entree ferait
+   passer le retour de l'appareil pour une action manuelle (boost fantome /
+   blocage 2 h) -- exactement ce que la grace devait empecher.
+3. **Appareil declare hors ligne** : `_offline` appelle `_input_ready("device")`,
+   sinon un appareil muet ferait attendre jusqu'au plafond alors que le verdict
+   est deja rendu.
+
+Nouvel attribut de diagnostic : `pending_inputs` (liste triee, `None` hors attente).
+
+Ce qui est restaure reste la consigne et le mode, PAS l'humidite mesuree : apres
+une coupure longue elle peut dater d'heures, et reguler dessus est precisement ce
+que `SENSOR_STALE_TIMEOUT` cherche a eviter.
+
 ### Constats de production du 2026-08-29
 
 - **Code deploye et fonctionnel** : les hygrostats dont l'appareil est hors ligne

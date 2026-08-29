@@ -181,6 +181,11 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         self._manual_hold_remove = None
         self._startup_grace_until = None
         self._startup_grace_remove = None
+        # Entrées dont on attend une première valeur exploitable au démarrage,
+        # et celles qui en ont déjà publié une (certaines, les templates en
+        # particulier, se renseignent avant même le démarrage de HA)
+        self._pending_inputs = None
+        self._inputs_seen = set()
         # Appareil injoignable (confirmé après DEVICE_OFFLINE_GRACE)
         self._device_offline = False
         self._device_offline_remove = None
@@ -266,6 +271,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
                 STATE_UNKNOWN,
             ):
                 self._update_humidity(sensor_state.state)
+                self._input_ready("sensor")
             if self._target_entity_id:
                 target_state = self.hass.states.get(self._target_entity_id)
                 if target_state and target_state.state not in (
@@ -273,12 +279,14 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
                     STATE_UNKNOWN,
                 ):
                     self._update_target(target_state.state)
+                    self._input_ready("target")
             if self._device_entity_id:
                 # Capteur interne + resynchronisation de l'état réel
                 device_state = self.hass.states.get(self._device_entity_id)
                 self._update_secondary(device_state)
                 if device_state and device_state.state in ("on", "off"):
                     self._active = device_state.state == "on"
+                    self._input_ready("device")
                 else:
                     self._arm_device_offline()
             if self._boost_timer_entity_id:
@@ -299,7 +307,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             _async_startup()
         else:
             # Vrai démarrage de HA : les entités se réhydratent dans le
-            # désordre, on laisse retomber la poussière avant de piloter
+            # désordre, on attend que chacune ait une valeur exploitable
             @callback
             def _async_startup_after_boot(_event):
                 self._arm_startup_grace()
@@ -367,6 +375,9 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             "error_active": self._error,
             "manual_off_until": self._manual_off_until,
             "startup_grace_until": self._startup_grace_until,
+            "pending_inputs": sorted(self._pending_inputs)
+            if self._pending_inputs
+            else None,
             "device_offline": self._device_offline,
             "last_power_cycle": self._last_power_cycle,
         }
@@ -439,8 +450,10 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             value = result_as_boolean(result)
             if update.template is self._enable_template:
                 self._apply_enable(value)
+                self._input_ready("enable")
             elif update.template is self._error_template:
                 self._apply_error(value)
+                self._input_ready("error")
 
     @callback
     def _apply_error(self, value):
@@ -595,6 +608,9 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
     def _async_device_changed(self, event):
         new_state = event.data.get("new_state")
         old_state = event.data.get("old_state")
+        # Capturé AVANT de lever l'attente : sinon l'entrée qui devient prête
+        # ferait passer le retour de l'appareil pour une action manuelle
+        in_grace = self._in_startup_grace
         # Humidité du capteur interne, à chaque changement (état ou attributs)
         before = (self._cur_humidity, self._secondary_humidity)
         self._update_secondary(new_state)
@@ -612,11 +628,12 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             self._device_offline or self._device_offline_remove is not None
         )
         self._clear_device_offline()
+        self._input_ready("device")
 
         # Détection de la marche/arrêt manuel
         if (is_on := new_state.state == "on") != self._active:
             if (
-                self._in_startup_grace
+                in_grace
                 or was_offline
                 or old_state is None
                 or old_state.state not in ("on", "off")
@@ -626,7 +643,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
                 # Resynchronisation silencieuse, ni boost ni blocage 2 h.
                 self._active = is_on
                 self.async_write_ha_state()
-                if not self._in_startup_grace:
+                if not in_grace:
                     self.hass.async_create_task(self._async_control())
                 return
             self.hass.async_create_task(self._async_handle_manual_switch(is_on))
@@ -650,6 +667,8 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
                 "%s ne répond plus : hygrostat marqué indisponible",
                 self._device_entity_id,
             )
+            # Verdict rendu sur cette entrée : inutile de l'attendre plus
+            self._input_ready("device")
             self.async_write_ha_state()
             # Dernier recours : couper puis rendre le courant a l'appareil
             if self._power_switch_entity_id and self._power_cycle_task is None:
@@ -802,19 +821,40 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
 
     @property
     def _in_startup_grace(self):
-        return self._startup_grace_until is not None
+        return self._pending_inputs is not None
 
     @callback
     def _arm_startup_grace(self):
         if not self._startup_delay:
             return
+        # On n'attend PAS une durée fixe, mais que chaque entrée configurée
+        # ait publié une valeur exploitable : au boot c'est affaire de
+        # secondes, pas de minutes. Le délai n'est plus qu'un garde-fou pour
+        # le cas où une entrée ne reviendrait jamais.
+        pending = {"sensor"}
+        if self._target_entity_id:
+            pending.add("target")
+        if self._device_entity_id:
+            pending.add("device")
+        if self._enable_template is not None:
+            pending.add("enable")
+        if self._error_template is not None:
+            pending.add("error")
+        # Ce qui a déjà parlé n'est pas attendu une seconde fois
+        pending -= self._inputs_seen
+        if not pending:
+            return
+        self._pending_inputs = pending
         self._startup_grace_until = dt_util.utcnow() + self._startup_delay
 
         @callback
         def _grace_expired(_now):
             self._startup_grace_remove = None
-            self._startup_grace_until = None
-            _LOGGER.debug("Fin de la période de grâce, régulation appliquée")
+            _LOGGER.warning(
+                "Délai de stabilisation dépassé, entrées toujours muettes : %s",
+                ", ".join(sorted(self._pending_inputs or ())),
+            )
+            self._clear_startup_grace()
             self.hass.async_create_task(self._async_control(force=True))
             self.async_write_ha_state()
 
@@ -823,11 +863,27 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         )
 
     @callback
+    def _input_ready(self, name):
+        """Une entrée vient de publier une valeur exploitable."""
+        self._inputs_seen.add(name)
+        if self._pending_inputs is None:
+            return
+        self._pending_inputs.discard(name)
+        if self._pending_inputs:
+            return
+        # Tout est en place : on régule sans attendre la fin du délai
+        self._clear_startup_grace()
+        _LOGGER.debug("Entrées stabilisées, régulation appliquée")
+        self.hass.async_create_task(self._async_control(force=True))
+        self.async_write_ha_state()
+
+    @callback
     def _clear_startup_grace(self):
         if self._startup_grace_remove is not None:
             self._startup_grace_remove()
             self._startup_grace_remove = None
         self._startup_grace_until = None
+        self._pending_inputs = None
 
     # ----- Entité de consigne -----
 
@@ -837,6 +893,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             return
         self._update_target(new_state.state)
+        self._input_ready("target")
         self.hass.async_create_task(self._async_control())
         self.async_write_ha_state()
 
@@ -862,6 +919,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             return
         self._clear_sensor_watchdog()
         self._update_humidity(new_state.state)
+        self._input_ready("sensor")
         self.hass.async_create_task(self._async_control())
         self.async_write_ha_state()
 
