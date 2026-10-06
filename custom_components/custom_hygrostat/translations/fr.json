@@ -20,6 +20,9 @@
           "boost_humidity": "Consigne en marche forcée (boost)",
           "device_entity": "Entité déshumidificateur (pilotée par l'hygrostat, et source du capteur interne)",
           "power_switch": "Prise d'alimentation (optionnelle : coupure de courant si l'appareil ne répond plus)",
+          "power_sensor": "Puissance de la prise (optionnel : aucune coupure si l'appareil ne consomme rien)",
+          "probe_host": "Adresse IP de l'appareil (optionnel : sonde de joignabilité avant coupure)",
+          "probe_port": "Port de la sonde (6668 pour un module Tuya)",
           "fan_entity": "Ventilateur de l'appareil (optionnel, pour piloter la puissance)",
           "fan_speed_template": "Puissance de ventilation (template rendant un %, défaut 50)",
           "target_template": "Consigne (template, ex. {{ 55 }} ou {{ states('sensor.consigne')|float }})"
@@ -31,7 +34,8 @@
       "invalid_template": "Template invalide.",
       "self_reference": "Cette entité est celle de l'hygrostat lui-même : désignez l'appareil, pas son régulateur.",
       "fan_entity_required": "Un template de puissance de ventilation exige de désigner le ventilateur.",
-      "target_required": "La consigne est obligatoire : un template, par exemple {{ 55 }}."
+      "target_required": "La consigne est obligatoire : un template, par exemple {{ 55 }}.",
+      "power_switch_required": "Ce réglage ne sert qu'à décider d'une coupure : renseignez d'abord la prise d'alimentation"
     },
     "abort": {
       "already_configured": "Un hygrostat porte déjà ce nom."
@@ -56,6 +60,9 @@
           "boost_humidity": "Consigne en marche forcée (boost)",
           "device_entity": "Entité déshumidificateur (pilotée par l'hygrostat, et source du capteur interne)",
           "power_switch": "Prise d'alimentation (optionnelle : coupure de courant si l'appareil ne répond plus)",
+          "power_sensor": "Puissance de la prise (optionnel : aucune coupure si l'appareil ne consomme rien)",
+          "probe_host": "Adresse IP de l'appareil (optionnel : sonde de joignabilité avant coupure)",
+          "probe_port": "Port de la sonde (6668 pour un module Tuya)",
           "fan_entity": "Ventilateur de l'appareil (optionnel, pour piloter la puissance)",
           "fan_speed_template": "Puissance de ventilation (template rendant un %, défaut 50)",
           "target_template": "Consigne (template, ex. {{ 55 }} ou {{ states('sensor.consigne')|float }})"
@@ -68,7 +75,8 @@
       "invalid_template": "Template invalide.",
       "self_reference": "Cette entité est celle de l'hygrostat lui-même : désignez l'appareil, pas son régulateur.",
       "fan_entity_required": "Un template de puissance de ventilation exige de désigner le ventilateur.",
-      "target_required": "La consigne est obligatoire : un template, par exemple {{ 55 }}."
+      "target_required": "La consigne est obligatoire : un template, par exemple {{ 55 }}.",
+      "power_switch_required": "Ce réglage ne sert qu'à décider d'une coupure : renseignez d'abord la prise d'alimentation"
     }
   }
 }

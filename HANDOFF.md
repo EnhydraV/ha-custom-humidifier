@@ -838,3 +838,50 @@ d'auto-reference sur `device_entity`, `fan_entity` et `power_switch`.
   capteur est `unavailable`. La disponibilite geree dans le code couvre le cas,
   mais un `{{ not is_state('...', 'off') }}` reste une option.
 - Toujours aucun test automatise ni CI (problemes connus n°8 et 9).
+
+## 2026-10-06 - La coupure ne part plus a l'aveugle (v0.3.0)
+
+Point de depart : une journee d'enquete sur quatre DryFy Tuya, ou le composant
+a sauve deux appareils (SDB coupe a 10:22:11 UTC, revenu a 10:23:54 ; SAM d'ete
+coupe a 09:48:10, revenu a 09:53:23) et n'a rien pu faire pour le SDB NE, dont
+la PRISE Matter etait elle-meme `unavailable` depuis le 03/10.
+
+Le declencheur « l'entite ne publie plus d'etat exploitable depuis 60 s » etait
+le seul critere. Il est vrai aussi quand l'integration de l'appareil est en
+`setup_retry` apres un redemarrage de HA, et tuya_local attend jusqu'a 600 s
+entre deux essais : un appareil en parfait etat pouvait donc se faire couper.
+
+Trois examens ajoutes avant la coupure, dans cet ordre :
+
+1. `POWER_CYCLE_STARTUP_HOLD` (15 min) depuis la mise en service de l'entite,
+   plus la periode de grace de demarrage, capturee dans `_offline` AVANT
+   `_input_ready` qui la leve. Couvre les 600 s de backoff de tuya_local.
+2. `CONF_POWER_SENSOR` : sous `POWER_CYCLE_MIN_WATTS` (0,5 W), la prise ne lit
+   plus que sa propre electronique, l'appareil est deja hors tension. Mesure
+   illisible = comportement ordinaire, donc coupure (regle maison : le defaut
+   est le cas ORDINAIRE, jamais le cas particulier).
+3. `CONF_PROBE_HOST` / `CONF_PROBE_PORT` (defaut 6668) : connexion TCP de 2 s.
+   Acceptee = l'appareil est sur le reseau et refuse seulement les sessions,
+   ce que tuya_local rapporte en erreur 914, et la coupure est le remede exact.
+   Injoignable = absent du reseau, coupure tentee quand meme mais journalisee
+   comme peu prometteuse. Verdict expose dans `last_probe_result`.
+
+Les deux nouveaux champs sont refuses sans prise d'alimentation
+(`power_switch_required`) : ils ne servent qu'a decider d'une coupure.
+
+Mesure de terrain qui a fixe le seuil des 0,5 W : la prise du SDB NE lit 0,8 W
+avec l'appareil en veille, celle du Cave NW lit 0,0 W sur 24 h avec l'appareil
+eteint. Le seuil separe les deux, et il se trompe du bon cote (il autorise la
+coupure en cas de doute).
+
+Reglages a poser sur l'installation Cocodrilo :
+
+| Entree | Prise | Puissance | IP |
+|---|---|---|---|
+| DH SDB NE | switch.salle_de_bain_ne_lm02 | sensor.salle_de_bain_ne_lm02_puissance | 192.168.7.98 |
+| DH SAM d'ete | switch.ns02 | sensor.ns02_power | 192.168.7.92 |
+| DH Cave NW | switch.ns06 | sensor.ns06_power | 192.168.7.91 |
+| DH Salle de bain | switch.mp01_3 | (la prise n'en publie pas) | 192.168.7.93 |
+
+Toujours aucun test automatise : ces trois criteres sont verifies par lecture,
+pas par execution.

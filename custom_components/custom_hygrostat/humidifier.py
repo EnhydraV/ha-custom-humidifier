@@ -50,6 +50,9 @@ from .const import (
     CONF_FAN_SPEED_TEMPLATE,
     CONF_STARTUP_DELAY,
     CONF_POWER_SWITCH,
+    CONF_POWER_SENSOR,
+    CONF_PROBE_HOST,
+    CONF_PROBE_PORT,
     DEFAULT_TOLERANCE,
     DEFAULT_MIN_HUMIDITY,
     DEFAULT_MAX_HUMIDITY,
@@ -58,9 +61,13 @@ from .const import (
     DEFAULT_FAN_SPEED,
     DEFAULT_MIN_CYCLE_MINUTES,
     DEFAULT_STARTUP_DELAY_SECONDS,
+    DEFAULT_PROBE_PORT,
     DEVICE_OFFLINE_GRACE,
     POWER_CYCLE_OFF_DELAY,
     POWER_CYCLE_MIN_INTERVAL,
+    POWER_CYCLE_STARTUP_HOLD,
+    POWER_CYCLE_MIN_WATTS,
+    PROBE_TIMEOUT,
     TEMPLATE_CLEAR_DELAY,
     SENSOR_STALE_TIMEOUT,
     MANUAL_OFF_HOLD,
@@ -110,6 +117,9 @@ async def async_setup_entry(
                 boost_humidity=cfg.get(CONF_BOOST_HUMIDITY, DEFAULT_BOOST_HUMIDITY),
                 device_entity_id=cfg[CONF_DEVICE_ENTITY],
                 power_switch_entity_id=cfg.get(CONF_POWER_SWITCH),
+                power_sensor_entity_id=cfg.get(CONF_POWER_SENSOR),
+                probe_host=cfg.get(CONF_PROBE_HOST),
+                probe_port=cfg.get(CONF_PROBE_PORT, DEFAULT_PROBE_PORT),
                 startup_delay_seconds=cfg.get(
                     CONF_STARTUP_DELAY, DEFAULT_STARTUP_DELAY_SECONDS
                 ),
@@ -148,6 +158,9 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         boost_humidity,
         device_entity_id,
         power_switch_entity_id,
+        power_sensor_entity_id,
+        probe_host,
+        probe_port,
         startup_delay_seconds,
         fan_entity_id,
         enable_template,
@@ -169,6 +182,9 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         self._boost_humidity = boost_humidity
         self._device_entity_id = device_entity_id
         self._power_switch_entity_id = power_switch_entity_id
+        self._power_sensor_entity_id = power_sensor_entity_id
+        self._probe_host = (probe_host or "").strip() or None
+        self._probe_port = int(probe_port or DEFAULT_PROBE_PORT)
         self._fan_entity_id = fan_entity_id
         self._startup_delay = timedelta(seconds=startup_delay_seconds)
 
@@ -195,6 +211,12 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         # Redemarrage par coupure de courant (prise optionnelle)
         self._last_power_cycle = None
         self._power_cycle_task = None
+        # Verdict de la derniere sonde de joignabilite : True = l'appareil
+        # accepte les connexions (session bloquee), False = injoignable
+        self._last_probe_result = None
+        # Horodatage de la mise en service de l'entite, qui vaut demarrage de
+        # HA ou rechargement des options
+        self._started_at = None
         # Temporisations de levée des conditions d'erreur / d'activation
         self._template_clear_remove = {}
         self._sensor_stale_remove = None
@@ -208,6 +230,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
 
     async def async_added_to_hass(self):
         await super().async_added_to_hass()
+        self._started_at = dt_util.utcnow()
 
         self.async_on_remove(self._clear_manual_hold)
         self.async_on_remove(self._clear_startup_grace)
@@ -389,6 +412,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             else None,
             "device_offline": self._device_offline,
             "last_power_cycle": self._last_power_cycle,
+            "last_probe_result": self._last_probe_result,
         }
 
     async def async_turn_on(self, **kwargs):
@@ -753,6 +777,10 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         def _offline(_now):
             self._device_offline_remove = None
             self._device_offline = True
+            # Capturé AVANT _input_ready, qui lève la période de grâce :
+            # pendant celle-ci, une entité muette est une entrée qui n'a pas
+            # fini de se charger, pas un appareil en panne
+            in_grace = self._in_startup_grace
             _LOGGER.warning(
                 "%s ne répond plus : hygrostat marqué indisponible",
                 self._device_entity_id,
@@ -761,7 +789,11 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             self._input_ready("device")
             self.async_write_ha_state()
             # Dernier recours : couper puis rendre le courant a l'appareil
-            if self._power_switch_entity_id and self._power_cycle_task is None:
+            if (
+                self._power_switch_entity_id
+                and self._power_cycle_task is None
+                and not in_grace
+            ):
                 self._power_cycle_task = self.hass.async_create_task(
                     self._async_power_cycle()
                 )
@@ -783,6 +815,50 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             self._power_cycle_task.cancel()
             self._power_cycle_task = None
 
+    @callback
+    def _power_draw(self):
+        """Puissance tiree par l'appareil, ou None si on ne peut pas savoir."""
+        if not self._power_sensor_entity_id:
+            return None
+        state = self.hass.states.get(self._power_sensor_entity_id)
+        if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return None
+        try:
+            return float(state.state)
+        except (TypeError, ValueError):
+            # Mesure illisible : on laisse le comportement ordinaire, donc
+            # la coupure, plutot que de bloquer sur une valeur qu'on ignore
+            return None
+
+    async def _async_probe_device(self):
+        """L'appareil accepte-t-il encore une connexion TCP ?
+
+        True  : il repond, donc il est sur le reseau et c'est sa session qui
+                est bloquee (tuya-local rend alors l'erreur 914) ; la coupure
+                est exactement le remede.
+        False : injoignable, donc absent du reseau ; la coupure reste tentee,
+                avec moins de chances d'aboutir.
+        None  : aucune sonde configuree.
+        """
+        if not self._probe_host:
+            return None
+        writer = None
+        try:
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection(self._probe_host, self._probe_port),
+                PROBE_TIMEOUT,
+            )
+            return True
+        except (OSError, asyncio.TimeoutError):
+            return False
+        finally:
+            if writer is not None:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except OSError:
+                    pass
+
     async def _async_power_cycle(self):
         """Coupe puis rend le courant a un appareil qui ne repond plus.
 
@@ -792,6 +868,21 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         """
         try:
             now = dt_util.utcnow()
+            if (
+                self._started_at is not None
+                and now - self._started_at < POWER_CYCLE_STARTUP_HOLD
+            ):
+                # Home Assistant vient de demarrer : une integration encore en
+                # setup_retry laisse son entite indisponible sans que
+                # l'appareil ait quoi que ce soit a se reprocher, et certaines
+                # attendent 600 s entre deux essais
+                _LOGGER.info(
+                    "Redémarrage de %s ignoré : Home Assistant a démarré il y "
+                    "a moins de %s",
+                    self._device_entity_id,
+                    POWER_CYCLE_STARTUP_HOLD,
+                )
+                return
             if (
                 self._last_power_cycle is not None
                 and now - self._last_power_cycle < POWER_CYCLE_MIN_INTERVAL
@@ -811,6 +902,37 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
                     self._power_switch_entity_id,
                 )
                 return
+
+            watts = self._power_draw()
+            if watts is not None and watts < POWER_CYCLE_MIN_WATTS:
+                # La prise ne mesure plus que sa propre electronique :
+                # l'appareil est deja hors tension, le couper n'apporte rien
+                _LOGGER.warning(
+                    "Redémarrage de %s ignoré : %s ne mesure que %s W, "
+                    "l'appareil est déjà hors tension",
+                    self._device_entity_id,
+                    self._power_sensor_entity_id,
+                    watts,
+                )
+                return
+
+            self._last_probe_result = await self._async_probe_device()
+            if self._last_probe_result is True:
+                _LOGGER.warning(
+                    "%s accepte les connexions sur %s:%s tout en restant muet "
+                    "pour HA : session bloquée, la coupure est le remède",
+                    self._device_entity_id,
+                    self._probe_host,
+                    self._probe_port,
+                )
+            elif self._last_probe_result is False:
+                _LOGGER.warning(
+                    "%s ne répond pas sur %s:%s : absent du réseau, la coupure "
+                    "a peu de chances de suffire",
+                    self._device_entity_id,
+                    self._probe_host,
+                    self._probe_port,
+                )
 
             self._last_power_cycle = now
             domain = self._power_switch_entity_id.split(".")[0]

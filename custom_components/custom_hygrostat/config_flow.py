@@ -34,6 +34,9 @@ from .const import (
     CONF_FAN_SPEED_TEMPLATE,
     CONF_STARTUP_DELAY,
     CONF_POWER_SWITCH,
+    CONF_POWER_SENSOR,
+    CONF_PROBE_HOST,
+    CONF_PROBE_PORT,
     DEFAULT_NAME,
     DEFAULT_TOLERANCE,
     DEFAULT_MIN_HUMIDITY,
@@ -42,6 +45,7 @@ from .const import (
     DEFAULT_BOOST_HUMIDITY,
     DEFAULT_MIN_CYCLE_MINUTES,
     DEFAULT_STARTUP_DELAY_SECONDS,
+    DEFAULT_PROBE_PORT,
 )
 
 CONF_NAME = "name"
@@ -150,6 +154,27 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                 )
             ),
             vol.Optional(
+                CONF_POWER_SENSOR,
+                description={"suggested_value": defaults.get(CONF_POWER_SENSOR)},
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(
+                    domain="sensor", device_class="power"
+                )
+            ),
+            vol.Optional(
+                CONF_PROBE_HOST,
+                description={"suggested_value": defaults.get(CONF_PROBE_HOST)},
+            ): selector.TextSelector(),
+            vol.Optional(
+                CONF_PROBE_PORT,
+                default=defaults.get(CONF_PROBE_PORT, DEFAULT_PROBE_PORT),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=1, max=65535, step=1,
+                    mode=selector.NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Optional(
                 CONF_FAN_ENTITY,
                 description={"suggested_value": defaults.get(CONF_FAN_ENTITY)},
             ): selector.EntitySelector(
@@ -229,6 +254,10 @@ def _validate(
         if (target := user_input.get(conf)) and target in own_ids:
             # Se désigner soi-même comme appareil piloté reboucle sur soi
             errors[conf] = "self_reference"
+    for conf in (CONF_POWER_SENSOR, CONF_PROBE_HOST):
+        # Ces deux-la ne servent qu'a decider d'une coupure de courant
+        if user_input.get(conf) and not user_input.get(CONF_POWER_SWITCH):
+            errors[conf] = "power_switch_required"
     if user_input.get(CONF_FAN_SPEED_TEMPLATE) and not user_input.get(CONF_FAN_ENTITY):
         # Un template de vitesse sans ventilateur a piloter ne sert a rien
         errors[CONF_FAN_ENTITY] = "fan_entity_required"
@@ -267,6 +296,8 @@ class CustomHygrostatConfigFlow(ConfigFlow, domain=DOMAIN):
                 for conf in (
                     CONF_BOOST_TIMER,
                     CONF_POWER_SWITCH,
+                    CONF_POWER_SENSOR,
+                    CONF_PROBE_HOST,
                     CONF_FAN_ENTITY,
                 ):
                     user_input.setdefault(conf, None)
@@ -309,6 +340,8 @@ class CustomHygrostatOptionsFlow(OptionsFlow):
                 for conf in (
                     CONF_BOOST_TIMER,
                     CONF_POWER_SWITCH,
+                    CONF_POWER_SENSOR,
+                    CONF_PROBE_HOST,
                     CONF_FAN_ENTITY,
                 ):
                     user_input.setdefault(conf, None)

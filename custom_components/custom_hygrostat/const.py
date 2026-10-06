@@ -38,6 +38,15 @@ CONF_STARTUP_DELAY = "startup_delay"
 # ne repond plus (certains modules Tuya refusent les connexions locales
 # jusqu'a une coupure de courant)
 CONF_POWER_SWITCH = "power_switch"
+# Capteur de puissance de la prise. Une consommation quasi nulle signifie que
+# l'appareil est deja hors tension : lui couper le courant n'y changerait rien.
+CONF_POWER_SENSOR = "power_sensor"
+# Sonde de joignabilite de l'appareil. Un module qui accepte la connexion TCP
+# tout en restant muet pour HA a une session bloquee, et la coupure est alors
+# le seul remede (tuya-local rend l'erreur 914 dans ce cas precis). Un module
+# injoignable, lui, est absent du reseau : la coupure devient un pari.
+CONF_PROBE_HOST = "probe_host"
+CONF_PROBE_PORT = "probe_port"
 
 DEFAULT_NAME = "Custom Hygrostat"
 DEFAULT_TOLERANCE = 3
@@ -48,6 +57,8 @@ DEFAULT_BOOST_HUMIDITY = 50
 DEFAULT_FAN_SPEED = 50
 DEFAULT_MIN_CYCLE_MINUTES = 0
 DEFAULT_STARTUP_DELAY_SECONDS = 120
+# Port local des modules Tuya
+DEFAULT_PROBE_PORT = 6668
 
 # Blocage de la régulation après une extinction manuelle de l'appareil
 MANUAL_OFF_HOLD = timedelta(hours=2)
@@ -71,3 +82,12 @@ POWER_CYCLE_OFF_DELAY = timedelta(seconds=90)
 # Deux redémarrages ne peuvent pas s'enchaîner : si l'appareil ne revient pas,
 # c'est une panne, pas un blocage, et rien ne sert de le maltraiter en boucle
 POWER_CYCLE_MIN_INTERVAL = timedelta(hours=2)
+# Un redemarrage de Home Assistant rend les entites indisponibles sans que
+# l'appareil ait le moindre probleme, et une integration en setup_retry peut
+# attendre 600 s avant son essai suivant. Aucune coupure pendant ce delai.
+POWER_CYCLE_STARTUP_HOLD = timedelta(minutes=15)
+# En dessous de ce seuil, la prise ne mesure plus que sa propre electronique :
+# l'appareil qu'elle alimente est deja hors tension
+POWER_CYCLE_MIN_WATTS = 0.5
+# Attente maximale de la sonde TCP de joignabilite, en secondes
+PROBE_TIMEOUT = 2.0

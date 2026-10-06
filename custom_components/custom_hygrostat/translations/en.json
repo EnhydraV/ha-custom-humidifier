@@ -20,6 +20,9 @@
           "boost_humidity": "Boost target humidity",
           "device_entity": "Dehumidifier entity (driven by the hygrostat, and source of the internal sensor)",
           "power_switch": "Power switch (optional: power-cycles the device when it stops responding)",
+          "power_sensor": "Outlet power (optional: no power cycle if the device draws nothing)",
+          "probe_host": "Device IP address (optional: reachability probe before cutting power)",
+          "probe_port": "Probe port (6668 for a Tuya module)",
           "fan_entity": "Device fan (optional, to drive the speed)",
           "fan_speed_template": "Fan speed (template returning a %, default 50)",
           "target_template": "Setpoint (template, e.g. {{ 55 }} or {{ states('sensor.setpoint')|float }})"
@@ -31,7 +34,8 @@
       "invalid_template": "Invalid template.",
       "self_reference": "This is the hygrostat's own entity: point to the appliance, not to its regulator.",
       "fan_entity_required": "A fan speed template requires selecting the fan entity.",
-      "target_required": "The setpoint is required: a template, for instance {{ 55 }}."
+      "target_required": "The setpoint is required: a template, for instance {{ 55 }}.",
+      "power_switch_required": "This setting only decides a power cycle: set the power outlet first"
     },
     "abort": {
       "already_configured": "A hygrostat with this name already exists."
@@ -56,6 +60,9 @@
           "boost_humidity": "Boost target humidity",
           "device_entity": "Dehumidifier entity (driven by the hygrostat, and source of the internal sensor)",
           "power_switch": "Power switch (optional: power-cycles the device when it stops responding)",
+          "power_sensor": "Outlet power (optional: no power cycle if the device draws nothing)",
+          "probe_host": "Device IP address (optional: reachability probe before cutting power)",
+          "probe_port": "Probe port (6668 for a Tuya module)",
           "fan_entity": "Device fan (optional, to drive the speed)",
           "fan_speed_template": "Fan speed (template returning a %, default 50)",
           "target_template": "Setpoint (template, e.g. {{ 55 }} or {{ states('sensor.setpoint')|float }})"
@@ -68,7 +75,8 @@
       "invalid_template": "Invalid template.",
       "self_reference": "This is the hygrostat's own entity: point to the appliance, not to its regulator.",
       "fan_entity_required": "A fan speed template requires selecting the fan entity.",
-      "target_required": "The setpoint is required: a template, for instance {{ 55 }}."
+      "target_required": "The setpoint is required: a template, for instance {{ 55 }}.",
+      "power_switch_required": "This setting only decides a power cycle: set the power outlet first"
     }
   }
 }

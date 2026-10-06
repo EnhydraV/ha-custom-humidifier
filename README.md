@@ -33,6 +33,9 @@ Tout se configure via l'interface (config flow + options flow). L'intégration e
 | Timer de marche forcée | Entité `timer` optionnelle qui pilote le mode `boost` |
 | Consigne en marche forcée | Consigne appliquée pendant le mode `boost` (défaut 50 %) |
 | Prise d'alimentation | `switch` ou `input_boolean` optionnel : coupure de courant automatique quand l'appareil ne répond plus |
+| Puissance de la prise | `sensor` optionnel : une consommation quasi nulle annule la coupure (l'appareil est déjà hors tension) |
+| Adresse IP de l'appareil | Optionnelle : sonde de joignabilité TCP avant la coupure |
+| Port de la sonde | Port testé par la sonde (défaut 6668, celui des modules Tuya) |
 | Ventilateur de l'appareil | Entité `fan` optionnelle : oscillation forcée et cible du réglage de puissance |
 | Puissance de ventilation | Template optionnel rendant un pourcentage (défaut 50) |
 | Condition d'activation | Template optionnel ; `false` = appareil coupé (vide = toujours `true`) |
@@ -183,6 +186,25 @@ Les coupures de sécurité (condition d'erreur, condition d'activation `false`, 
 
 Certains appareils cessent d'accepter les connexions locales et ne reviennent que par une coupure d'alimentation, tout en continuant de répondre au ping et au cloud (le cas est documenté pour tuya-local : [issue #5736](https://github.com/make-all/tuya-local/issues/5736)). Renseignez alors le champ **Prise d'alimentation** avec la prise commandée qui alimente l'appareil : dès qu'il est déclaré injoignable, l'hygrostat coupe le courant 90 secondes puis le rétablit.
 
+#### Décider que la coupure est utile
+
+Une entité indisponible ne prouve pas que l'appareil est en panne, et couper le courant d'une machine en bon état est précisément ce qu'il faut éviter. Trois examens précèdent donc la coupure.
+
+**1. Home Assistant vient-il de démarrer ?** Au redémarrage, une intégration encore en `setup_retry` laisse son entité indisponible alors que l'appareil va très bien, et certaines attendent 600 secondes entre deux essais. Aucune coupure n'est donc tentée dans les **15 minutes** qui suivent la mise en service de l'entité (`POWER_CYCLE_STARTUP_HOLD`), ni pendant la période de grâce de démarrage.
+
+**2. L'appareil consomme-t-il ?** Si le champ **Puissance de la prise** est renseigné, une mesure sous **0,5 W** (`POWER_CYCLE_MIN_WATTS`) signifie que la prise ne lit plus que sa propre électronique : l'appareil est déjà hors tension, et le redémarrer ne mènerait nulle part. La coupure est annulée et la raison journalisée. Une mesure illisible ou absente laisse le comportement ordinaire, donc la coupure.
+
+**3. L'appareil répond-il sur le réseau ?** Si une **adresse IP** est renseignée, une connexion TCP est tentée sur le port de la sonde (2 secondes de patience) :
+
+| Résultat | Lecture | Suite |
+|---|---|---|
+| Connexion acceptée | L'appareil est sur le réseau et refuse seulement les sessions : c'est le cas que `tuya-local` rapporte en **erreur 914**, et la coupure en est le remède exact | Coupure |
+| Injoignable | L'appareil est absent du réseau | Coupure quand même, journalisée comme peu prometteuse |
+
+Le verdict est exposé dans l'attribut `last_probe_result`.
+
+Ces deux derniers champs n'ont de sens qu'avec une prise d'alimentation : le formulaire les refuse sans elle.
+
 Garde-fous :
 
 - **Un seul essai toutes les 2 heures.** Si l'appareil ne revient pas après une coupure, c'est une panne et non un blocage : insister ne ferait que le maltraiter.
@@ -190,7 +212,7 @@ Garde-fous :
 - **90 secondes hors tension**, de quoi réinitialiser l'électronique et laisser la pression du circuit frigorifique s'égaliser avant que le compresseur ne reparte. Ajustez `POWER_CYCLE_OFF_DELAY` dans `const.py` si votre appareil demande davantage.
 - Si l'entité est retirée pendant la coupure (rechargement des options, arrêt de HA), **le courant est rendu quand même** : l'appareil ne peut pas rester éteint faute de quelqu'un pour le rallumer.
 
-Attributs exposés : `device_offline` et `last_power_cycle`.
+Attributs exposés : `device_offline`, `last_power_cycle` et `last_probe_result`.
 
 Attention : l'appareil est injoignable, donc son état réel est inconnu au moment de la coupure. Si le vôtre ne redémarre pas seul après un retour de courant, vérifiez son réglage de mémoire d'état (les prises Tuya exposent souvent un `power_outage_memory`).
 
