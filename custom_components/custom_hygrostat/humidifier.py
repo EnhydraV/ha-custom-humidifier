@@ -315,19 +315,23 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             tpl_info.async_refresh()
 
         if (old_state := await self.async_get_last_state()) is not None:
-            # La consigne restaurée est TOUJOURS reprise, entité de consigne
-            # comprise : c'est justement la dernière valeur connue de cette
-            # entité, puisqu'on la recopie ici à chaque changement. Repartir du
-            # défaut de configuration ferait réguler sur une consigne que
-            # l'utilisateur n'a jamais choisie tant que l'entité n'est pas
-            # lisible (elle ne l'est pas forcément au démarrage, et rien ne la
-            # relit ensuite si sa valeur n'a pas bougé).
+            # La consigne restaurée sert de REPLI tant que le template n'a
+            # rien rendu : repartir du défaut de configuration ferait réguler
+            # sur une consigne que l'utilisateur n'a jamais choisie quand la
+            # source n'est pas encore lisible (elle ne l'est pas forcément au
+            # démarrage, et rien ne la relit ensuite si sa valeur n'a pas
+            # bougé). Elle ne doit EN REVANCHE jamais écraser un rendu déjà
+            # applique : le suivi de template est arme quelques lignes plus
+            # haut, donc un template statique, ou dont la source n'a pas
+            # change, est rendu AVANT ce bloc. Sans la garde, modifier le
+            # template restait sans effet jusqu'au prochain changement de sa
+            # source, et sans effet du tout s'il etait constant.
             h = old_state.attributes.get("normal_humidity")
             if h is None and old_state.attributes.get("mode") != self.MODE_BOOST:
                 # Entités d'avant l'ajout de "normal_humidity" : l'attribut
                 # standard fait l'affaire tant que le boost n'était pas engagé
                 h = old_state.attributes.get("humidity")
-            if h is not None:
+            if h is not None and "target" not in self._inputs_seen:
                 self._target_humidity = h
             if old_state.attributes.get("mode") in self._attr_available_modes:
                 self._attr_mode = old_state.attributes["mode"]

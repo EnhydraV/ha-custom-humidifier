@@ -973,3 +973,42 @@ refuse toujours une entree sans entite ni mode prise.
 LECON : `vol.Required` ou `vol.Optional` AVEC `default=` rend un champ
 ineffacable dans un flux d'options. Pour un champ qu'on doit pouvoir vider,
 c'est `description={"suggested_value": ...}` et rien d'autre.
+
+## 2026-10-11 - Imperfection connue : l'attribut power_draw est un instantane
+
+`extra_state_attributes` n'est recalcule qu'a l'ecriture de l'etat. `power_draw`
+affiche donc la puissance telle qu'elle etait au dernier changement de l'entite,
+pas la valeur courante : vu en production a 454 W alors que la prise lisait 0 W
+depuis plusieurs minutes.
+
+Sans consequence sur la logique, qui lit `_power_draw()` en direct a chaque
+evaluation. Reste trompeur sur une carte. Deux sorties possibles le jour ou ca
+gene : publier l'etat a chaque changement du capteur de puissance (bavard), ou
+retirer l'attribut et laisser lire le capteur directement.
+
+## 2026-10-11 - La consigne restauree ecrasait le template (v0.4.3)
+
+Decouvert en production en essayant de baisser une consigne pour tester un
+demarrage : `target_template` passe a `{{ 50 }}`, entree rechargee, et
+l'hygrostat continuait de reguler sur 75.
+
+Cause, dans `async_added_to_hass` : le suivi de template est arme et rafraichi
+ligne 315, puis la consigne restauree de l'etat precedent est appliquee ligne
+331. La restauration passe donc APRES le rendu et l'ecrase.
+
+Consequence reelle, plus large que le cas de test : modifier un template de
+consigne restait sans effet jusqu'au prochain changement de sa SOURCE, et sans
+effet du tout si le template etait constant. Avec un template dynamique le
+defaut se voyait a peine, la source finissant par bouger, ce qui explique qu'il
+soit passe inapercu. C'est le cousin du defaut corrige en v2 (entite de consigne
+lue une seule fois au demarrage puis jamais relue).
+
+Correctif : la restauration ne s'applique que si `"target"` n'est pas deja dans
+`_inputs_seen`, c'est-a-dire si `_apply_target` n'a pas encore rendu de valeur.
+L'intention d'origine est preservee, la restauration reste le REPLI quand la
+source n'est pas lisible au demarrage.
+
+Non couvert par les bancs d'essai : la logique vit dans `async_added_to_hass`,
+methode asynchrone qui depend de `async_get_last_state` et du suivi de
+templates, trop couteuse a doubler pour ce que ca rapporterait. Verifie par
+lecture et par la reproduction en production decrite ci-dessus.
