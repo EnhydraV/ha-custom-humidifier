@@ -70,8 +70,12 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                     domain="sensor", device_class="humidity"
                 )
             ),
-            vol.Required(
-                CONF_DEVICE_ENTITY, default=defaults.get(CONF_DEVICE_ENTITY)
+            # Optionnel au sens du formulaire SEULEMENT : sans pilotage par
+            # la prise, _validate le reclame. Un vol.Required a defaut le
+            # reinjectait des qu'on le vidait, donc il etait ineffacable.
+            vol.Optional(
+                CONF_DEVICE_ENTITY,
+                description={"suggested_value": defaults.get(CONF_DEVICE_ENTITY)},
             ): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain="humidifier")
             ),
@@ -335,6 +339,7 @@ class CustomHygrostatConfigFlow(ConfigFlow, domain=DOMAIN):
                 # Champ vidé = None explicite, sinon la fusion data/options
                 # ressusciterait l'ancienne valeur
                 for conf in (
+                    CONF_DEVICE_ENTITY,
                     CONF_BOOST_TIMER,
                     CONF_POWER_SWITCH,
                     CONF_POWER_SENSOR,
@@ -379,6 +384,7 @@ class CustomHygrostatOptionsFlow(OptionsFlow):
             errors = _validate(self.hass, user_input, self.config_entry)
             if not errors:
                 for conf in (
+                    CONF_DEVICE_ENTITY,
                     CONF_BOOST_TIMER,
                     CONF_POWER_SWITCH,
                     CONF_POWER_SENSOR,

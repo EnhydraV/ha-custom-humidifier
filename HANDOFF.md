@@ -954,3 +954,22 @@ deux capteurs en reseau, capteur externe SEUL en pilotage par la prise meme
 quand l'etat de la prise porte un `current_humidity`, prise sans attribut,
 nouvelle mesure externe, capteur externe illisible, capteur interne illisible,
 appareil indisponible.
+
+## 2026-10-11 - L'entite deshumidificateur etait ineffacable (v0.4.2)
+
+Revele en configurant la premiere entree en pilotage par la prise : le
+formulaire refusait avec `unexpected_in_plug_only` alors que le champ avait
+ete vide. Cause : `CONF_DEVICE_ENTITY` etait declare
+`vol.Required(..., default=defaults.get(...))`. Voluptuous REINJECTE un defaut
+quand la cle est absente, donc vider le champ le restaurait aussitot, depuis
+l'API comme depuis l'interface. Le champ n'avait jamais pu etre efface.
+
+Passe en `vol.Optional` avec `description={"suggested_value": ...}`, comme les
+autres entites optionnelles, et ajoute aux deux listes "champ vide = None".
+L'obligation n'est pas perdue : `_validate` la porte desormais
+(`device_entity_required` hors pilotage par la prise), et `async_setup_entry`
+refuse toujours une entree sans entite ni mode prise.
+
+LECON : `vol.Required` ou `vol.Optional` AVEC `default=` rend un champ
+ineffacable dans un flux d'options. Pour un champ qu'on doit pouvoir vider,
+c'est `description={"suggested_value": ...}` et rien d'autre.
