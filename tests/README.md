@@ -16,3 +16,4 @@ Code de retour 0 si tout passe, 1 sinon.
 | Script | Couvre |
 |---|---|
 | `essai_inertie.py` | Detection d'un appareil sous tension et inerte en pilotage par la prise : seuil, delai de demarrage, levee automatique, prise coupee a la main, mesure illisible, echeance. |
+| `essai_humidite.py` | Source de l'humidite selon le mode : moyenne des deux capteurs en reseau, capteur externe SEUL en pilotage par la prise, replis quand une source est illisible ou indisponible. |

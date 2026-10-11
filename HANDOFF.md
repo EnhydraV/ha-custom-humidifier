@@ -936,3 +936,21 @@ Reglages a poser pour le DryFy Cave NW : prise `switch.ns06`, puissance
 `sensor.ns06_power`. Attention, cette prise Zigbee repondait tres mal aux
 commandes le 06/10 (plusieurs minutes de retard) : a verifier avant de compter
 dessus comme actionneur unique.
+
+## 2026-10-11 - Source d'humidite en pilotage par la prise (v0.4.1)
+
+En pilotage par la prise, la regulation ne doit se fier qu'au capteur externe.
+C'etait deja le comportement, mais par EFFET DE BORD : `_async_device_changed`
+appelait `_update_secondary` sur l'etat de la prise, qui ne porte pas
+d'attribut `current_humidity`, d'ou un repli silencieux sur le seul capteur
+principal. Une prise bavarde publiant un attribut homonyme serait entree dans
+la moyenne sans que rien ne le signale.
+
+L'appel est desormais garde par `not self._plug_only`. La regle est ecrite au
+lieu d'etre subie.
+
+Deuxieme banc d'essai, `tests/essai_humidite.py`, 7 cas verts : moyenne des
+deux capteurs en reseau, capteur externe SEUL en pilotage par la prise meme
+quand l'etat de la prise porte un `current_humidity`, prise sans attribut,
+nouvelle mesure externe, capteur externe illisible, capteur interne illisible,
+appareil indisponible.

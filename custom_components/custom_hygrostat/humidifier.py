@@ -774,7 +774,12 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         in_grace = self._in_startup_grace
         # Humidité du capteur interne, à chaque changement (état ou attributs)
         before = (self._cur_humidity, self._secondary_humidity)
-        self._update_secondary(new_state)
+        if not self._plug_only:
+            # En pilotage par la prise, l'actionneur EST une prise : elle n'a
+            # pas d'humidité interne à moyenner, et un attribut homonyme venu
+            # d'un modèle bavard n'a rien à faire dans la régulation. Seul le
+            # capteur principal fait foi.
+            self._update_secondary(new_state)
         changed = before != (self._cur_humidity, self._secondary_humidity)
 
         if new_state is None or new_state.state not in ("on", "off"):

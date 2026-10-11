@@ -229,7 +229,7 @@ Ce qui change dans le fonctionnement :
 
 - l'hygrostat allume et éteint la prise au lieu d'appeler `humidifier.turn_on` / `turn_off` ;
 - l'état `on`/`off` de l'entité suit la prise, et une bascule manuelle de celle-ci est traitée comme une marche ou un arrêt manuels, avec le blocage de 2 h habituel ;
-- l'humidité vient du seul capteur principal, l'appareil n'ayant plus de capteur interne à moyenner ;
+- l'humidité vient du **seul capteur principal** : la moyenne avec le capteur interne de l'appareil est explicitement coupée, de sorte qu'un attribut `current_humidity` publié par une prise bavarde ne puisse pas entrer dans la régulation ;
 - le redémarrage par coupure de courant est désactivé : couper la prise pour réparer la prise n'aurait aucun sens, elle est l'actionneur.
 
 #### Détecter un appareil sous tension et inerte
