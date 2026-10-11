@@ -51,6 +51,9 @@ from .const import (
     CONF_STARTUP_DELAY,
     CONF_POWER_SWITCH,
     CONF_POWER_SENSOR,
+    CONF_PLUG_ONLY,
+    CONF_STALL_WATTS,
+    CONF_STALL_DELAY,
     CONF_PROBE_HOST,
     CONF_PROBE_PORT,
     DEFAULT_TOLERANCE,
@@ -62,6 +65,8 @@ from .const import (
     DEFAULT_MIN_CYCLE_MINUTES,
     DEFAULT_STARTUP_DELAY_SECONDS,
     DEFAULT_PROBE_PORT,
+    DEFAULT_STALL_WATTS,
+    DEFAULT_STALL_DELAY_SECONDS,
     DEVICE_OFFLINE_GRACE,
     POWER_CYCLE_OFF_DELAY,
     POWER_CYCLE_MIN_INTERVAL,
@@ -118,6 +123,11 @@ async def async_setup_entry(
                 device_entity_id=cfg[CONF_DEVICE_ENTITY],
                 power_switch_entity_id=cfg.get(CONF_POWER_SWITCH),
                 power_sensor_entity_id=cfg.get(CONF_POWER_SENSOR),
+                plug_only=cfg.get(CONF_PLUG_ONLY, False),
+                stall_watts=cfg.get(CONF_STALL_WATTS, DEFAULT_STALL_WATTS),
+                stall_delay_seconds=cfg.get(
+                    CONF_STALL_DELAY, DEFAULT_STALL_DELAY_SECONDS
+                ),
                 probe_host=cfg.get(CONF_PROBE_HOST),
                 probe_port=cfg.get(CONF_PROBE_PORT, DEFAULT_PROBE_PORT),
                 startup_delay_seconds=cfg.get(
@@ -159,6 +169,9 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         device_entity_id,
         power_switch_entity_id,
         power_sensor_entity_id,
+        plug_only,
+        stall_watts,
+        stall_delay_seconds,
         probe_host,
         probe_port,
         startup_delay_seconds,
@@ -183,6 +196,11 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         self._device_entity_id = device_entity_id
         self._power_switch_entity_id = power_switch_entity_id
         self._power_sensor_entity_id = power_sensor_entity_id
+        # Appareil hors reseau pilote par la seule prise : elle est a la fois
+        # l'interrupteur et, via sa mesure de puissance, le seul retour d'etat
+        self._plug_only = bool(plug_only)
+        self._stall_watts = float(stall_watts)
+        self._stall_delay = timedelta(seconds=stall_delay_seconds)
         self._probe_host = (probe_host or "").strip() or None
         self._probe_port = int(probe_port or DEFAULT_PROBE_PORT)
         self._fan_entity_id = fan_entity_id
@@ -214,6 +232,11 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         # Verdict de la derniere sonde de joignabilite : True = l'appareil
         # accepte les connexions (session bloquee), False = injoignable
         self._last_probe_result = None
+        # Appareil sous tension qui ne fait rien (reservoir plein le plus
+        # souvent) : detecte par la puissance, jamais par l'appareil lui-meme
+        self._stalled = False
+        self._low_power_since = None
+        self._stall_remove = None
         # Horodatage de la mise en service de l'entite, qui vaut demarrage de
         # HA ou rechargement des options
         self._started_at = None
@@ -254,14 +277,25 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
                 )
             )
 
-        if self._device_entity_id:
+        if self._actuator:
             self.async_on_remove(
                 async_track_state_change_event(
                     self.hass,
-                    [self._device_entity_id],
+                    [self._actuator],
                     self._async_device_changed,
                 )
             )
+
+        if self._plug_only and self._power_sensor_entity_id:
+            # Seul retour d'etat disponible sur un appareil hors reseau
+            self.async_on_remove(
+                async_track_state_change_event(
+                    self.hass,
+                    [self._power_sensor_entity_id],
+                    self._async_power_changed,
+                )
+            )
+        self.async_on_remove(self._cancel_stall_timer)
 
         track_templates = [
             TrackTemplate(tpl, None)
@@ -356,24 +390,34 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         return self._active
 
     @property
+    def _actuator(self):
+        """Entité réellement pilotée : la prise, ou l'appareil lui-même."""
+        if self._plug_only:
+            return self._power_switch_entity_id
+        return self._device_entity_id
+
+    @property
     def _device_state(self):
-        """État réel de l'appareil : True/False, None si inconnu."""
-        if not self._device_entity_id:
+        """État réel de l'actionneur : True/False, None si inconnu."""
+        if not self._actuator:
             return None
-        state = self.hass.states.get(self._device_entity_id)
+        state = self.hass.states.get(self._actuator)
         if state is None or state.state not in ("on", "off"):
             return None
         return state.state == "on"
 
     @property
     def _device_reachable(self):
-        """Faux si l'appareil est configuré mais ne publie plus d'état."""
-        return not self._device_entity_id or self._device_state is not None
+        """Faux si l'actionneur est configuré mais ne publie plus d'état."""
+        return not self._actuator or self._device_state is not None
 
     @property
     def icon(self):
         if self._error:
             return "mdi:water-alert"
+        if self._stalled:
+            # Sous tension et inerte : le reservoir, neuf fois sur dix
+            return "mdi:cup-water"
         # Le boost passe avant l'activation, qu'il ignore
         if self._attr_mode == self.MODE_BOOST:
             return "mdi:rocket-launch"
@@ -413,6 +457,9 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             "device_offline": self._device_offline,
             "last_power_cycle": self._last_power_cycle,
             "last_probe_result": self._last_probe_result,
+            "plug_only": self._plug_only,
+            "device_stalled": self._stalled if self._plug_only else None,
+            "power_draw": self._power_draw() if self._plug_only else None,
         }
 
     async def async_turn_on(self, **kwargs):
@@ -743,6 +790,9 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         )
         self._clear_device_offline()
         self._input_ready("device")
+        # L'actionneur vient de changer d'etat : le verdict d'inertie aussi,
+        # y compris quand la prise a ete basculee a la main
+        self._evaluate_stall()
 
         # Détection de la marche/arrêt manuel
         if (is_on := new_state.state == "on") != self._active:
@@ -793,6 +843,9 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
                 self._power_switch_entity_id
                 and self._power_cycle_task is None
                 and not in_grace
+                # En pilotage par la prise, couper la prise pour reparer la
+                # prise n'a aucun sens : elle EST l'actionneur
+                and not self._plug_only
             ):
                 self._power_cycle_task = self.hass.async_create_task(
                     self._async_power_cycle()
@@ -814,6 +867,81 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         if self._power_cycle_task is not None:
             self._power_cycle_task.cancel()
             self._power_cycle_task = None
+
+    # ----- Appareil sous tension et inerte (pilotage par la prise) -----
+
+    @callback
+    def _async_power_changed(self, event):
+        self._evaluate_stall()
+
+    @callback
+    def _evaluate_stall(self):
+        """Juge si l'appareil consomme alors qu'il est cense tourner."""
+        if not self._plug_only:
+            return
+        watts = self._power_draw()
+        if watts is None:
+            # Mesure illisible : aucun verdict, surtout pas celui de la panne
+            return
+        if not (self._active and self._device_state):
+            # On ne le croit pas en marche : rien a juger
+            self._clear_stall()
+            return
+        if watts >= self._stall_watts:
+            if self._stalled:
+                _LOGGER.info(
+                    "%s a repris : %s W", self._power_switch_entity_id, watts
+                )
+            self._clear_stall()
+            return
+        if self._low_power_since is None:
+            # Debut de la consommation basse : laisse a l'appareil le temps de
+            # demarrer apres une mise sous tension
+            self._low_power_since = dt_util.utcnow()
+            self._arm_stall_timer()
+            return
+        if dt_util.utcnow() - self._low_power_since >= self._stall_delay:
+            self._set_stall(watts)
+
+    @callback
+    def _arm_stall_timer(self):
+        # La prise ne republie que sur changement : sans echeance, une valeur
+        # basse et stable ne declencherait jamais de nouvelle evaluation
+        self._cancel_stall_timer()
+        self._stall_remove = async_call_later(
+            self.hass,
+            self._stall_delay.total_seconds(),
+            lambda _now: self._evaluate_stall(),
+        )
+
+    @callback
+    def _cancel_stall_timer(self):
+        if self._stall_remove is not None:
+            self._stall_remove()
+            self._stall_remove = None
+
+    @callback
+    def _set_stall(self, watts):
+        self._cancel_stall_timer()
+        if self._stalled:
+            return
+        self._stalled = True
+        _LOGGER.warning(
+            "%s est sous tension et ne tire que %s W depuis %s : appareil "
+            "arrêté de lui-même, réservoir plein le plus souvent",
+            self._power_switch_entity_id,
+            watts,
+            self._stall_delay,
+        )
+        self.async_write_ha_state()
+
+    @callback
+    def _clear_stall(self):
+        self._cancel_stall_timer()
+        self._low_power_since = None
+        if self._stalled:
+            self._stalled = False
+            self.async_write_ha_state()
 
     @callback
     def _power_draw(self):
@@ -1044,7 +1172,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         # secondes, pas de minutes. Le délai n'est plus qu'un garde-fou pour
         # le cas où une entrée ne reviendrait jamais.
         pending = {"sensor", "target"}
-        if self._device_entity_id:
+        if self._actuator:
             pending.add("device")
         if self._enable_template is not None:
             pending.add("enable")
@@ -1181,6 +1309,12 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
     async def _async_control(self, force=False):
         if self._error:
             return
+        if self._stalled:
+            # Appareil sous tension et inerte : le rallumer ne donnerait rien,
+            # et on le laisse DELIBEREMENT sous tension. Regle en marche forcee
+            # sur son panneau, il repart tout seul des que la cause disparait,
+            # ce que la remontee de puissance nous apprendra.
+            return
         if self._device_offline:
             # Appareil injoignable : rien à piloter, et surtout rien à prétendre
             return
@@ -1223,9 +1357,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         if not self._device_reachable:
             # Sans appareil joignable, l'action partirait dans le vide et
             # l'entité afficherait une marche imaginaire
-            _LOGGER.warning(
-                "Allumage ignoré : %s ne répond pas", self._device_entity_id
-            )
+            _LOGGER.warning("Allumage ignoré : %s ne répond pas", self._actuator)
             return
         # Croyance mise à jour AVANT l'action : l'événement de l'entité d'état
         # déclenché par nos propres actions ne doit pas passer pour manuel
@@ -1246,9 +1378,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         if not self._active and not (force and self._device_state):
             return
         if not self._device_reachable:
-            _LOGGER.warning(
-                "Extinction ignorée : %s ne répond pas", self._device_entity_id
-            )
+            _LOGGER.warning("Extinction ignorée : %s ne répond pas", self._actuator)
             return
         was_active = self._active
         self._active = False
@@ -1274,6 +1404,28 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
         La séquence est fixe, mais s'adapte à ce que l'appareil déclare : les
         modes ne portent pas les mêmes noms partout, et tous n'en ont pas.
         """
+        if self._plug_only:
+            # L'appareil est regle en marche forcee sur son propre panneau :
+            # remettre le courant suffit a le relancer, le couper l'arrete.
+            domaine = self._power_switch_entity_id.split(".")[0]
+            try:
+                await self.hass.services.async_call(
+                    domaine,
+                    "turn_on" if turn_on else "turn_off",
+                    {"entity_id": self._power_switch_entity_id},
+                    blocking=True,
+                    context=self._context or Context(),
+                )
+            except Exception:  # noqa: BLE001 - la prise peut ne pas repondre
+                _LOGGER.exception(
+                    "Échec du pilotage de %s (%s)",
+                    self._power_switch_entity_id,
+                    "allumage" if turn_on else "extinction",
+                )
+                return False
+            self._clear_stall()
+            return True
+
         state = self.hass.states.get(self._device_entity_id)
         if state is None:
             return False

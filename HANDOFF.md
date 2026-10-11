@@ -885,3 +885,54 @@ Reglages a poser sur l'installation Cocodrilo :
 
 Toujours aucun test automatise : ces trois criteres sont verifies par lecture,
 pas par execution.
+
+## 2026-10-11 - Pilotage par la prise seule (v0.4.0)
+
+Besoin : un deshumidificateur qui ne se connecte plus au reseau, donc sans
+entite a piloter. Regle EN MARCHE FORCEE sur son propre panneau, il repart de
+lui-meme des qu'il retrouve le courant : une prise commandee suffit alors.
+
+`CONF_PLUG_ONLY` coche ce mode. Il rend `CONF_POWER_SWITCH` et
+`CONF_POWER_SENSOR` obligatoires (seul actionneur, seul retour d'etat) et
+REFUSE `CONF_DEVICE_ENTITY` et `CONF_FAN_ENTITY`, qui appartiennent par
+definition a un appareil injoignable. `__init__.py` accepte desormais une
+entree sans entite deshumidificateur quand ce mode est actif.
+
+Implementation : une propriete `_actuator` (la prise, ou l'appareil) remplace
+`_device_entity_id` dans `_device_state`, `_device_reachable`, l'ecoute d'etat
+et les entrees attendues au demarrage. `_async_drive_device` gagne une branche
+prise qui appelle simplement `turn_on` / `turn_off` sur son domaine. Le
+redemarrage par coupure de courant est desactive dans ce mode : couper la prise
+pour reparer la prise n'a aucun sens.
+
+DETECTION DE L'INERTIE (`CONF_STALL_WATTS` 10 W, `CONF_STALL_DELAY` 180 s) :
+prise allumee + hygrostat qui le croit en marche + puissance sous le seuil
+pendant toute la duree. Le delai sert DEUX fois, volontairement : temps de
+demarrage accorde apres la mise sous tension, et duree de puissance basse
+exigee avant de conclure. Un degivrage passager ne declenche donc rien.
+
+DECISION A NE PAS DEFAIRE : une fois l'inertie constatee, la prise reste
+ALLUMEE. L'appareil etant en marche forcee, il repart seul des que le reservoir
+est vide, et la remontee de puissance leve l'alerte sans personne. La
+regulation cesse seulement de cycler la prise (`_async_control` sort tot sur
+`_stalled`, SANS coupure forcee, contrairement a `_error`). Couper reviendrait
+a attendre indefiniment un redemarrage que plus rien ne provoquerait.
+
+Mesure illisible ou absente : aucun verdict rendu. La regle maison tient
+(le defaut est le cas ORDINAIRE), ici l'absence de preuve ne vaut pas panne.
+
+Attributs : `plug_only`, `device_stalled`, `power_draw`. Icone `mdi:cup-water`.
+
+PREMIER BANC D'ESSAI DU DEPOT, `tests/essai_inertie.py` (probleme connu n°8,
+entame). Il ne duplique rien : il LIT `humidifier.py`, en extrait les methodes
+par `ast` et les execute avec des doublures (horloge, journal, echeances,
+registre d'etats). Le code joue est donc le code reel, et une methode renommee
+fait echouer le script sur un message explicite. 14 cas, tous verts :
+seuil haut et bas, delai non ecoule, inertie declaree, levee automatique,
+grace au demarrage, hygrostat a l'arret, prise coupee a la main, mesure
+indisponible, echeance tiree sans republication de la prise, mode desactive.
+
+Reglages a poser pour le DryFy Cave NW : prise `switch.ns06`, puissance
+`sensor.ns06_power`. Attention, cette prise Zigbee repondait tres mal aux
+commandes le 06/10 (plusieurs minutes de retard) : a verifier avant de compter
+dessus comme actionneur unique.

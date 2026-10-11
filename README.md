@@ -36,6 +36,9 @@ Tout se configure via l'interface (config flow + options flow). L'intégration e
 | Puissance de la prise | `sensor` optionnel : une consommation quasi nulle annule la coupure (l'appareil est déjà hors tension) |
 | Adresse IP de l'appareil | Optionnelle : sonde de joignabilité TCP avant la coupure |
 | Port de la sonde | Port testé par la sonde (défaut 6668, celui des modules Tuya) |
+| Pilotage par la prise seule | Pour un appareil hors réseau : la prise devient l'unique actionneur (voir plus bas) |
+| Seuil d'inertie | Puissance sous laquelle l'appareil est considéré comme arrêté (défaut 10 W) |
+| Délai d'inertie | Temps de démarrage accordé, et durée de puissance basse exigée (défaut 180 s) |
 | Ventilateur de l'appareil | Entité `fan` optionnelle : oscillation forcée et cible du réglage de puissance |
 | Puissance de ventilation | Template optionnel rendant un pourcentage (défaut 50) |
 | Condition d'activation | Template optionnel ; `false` = appareil coupé (vide = toujours `true`) |
@@ -215,6 +218,40 @@ Garde-fous :
 Attributs exposés : `device_offline`, `last_power_cycle` et `last_probe_result`.
 
 Attention : l'appareil est injoignable, donc son état réel est inconnu au moment de la coupure. Si le vôtre ne redémarre pas seul après un retour de courant, vérifiez son réglage de mémoire d'état (les prises Tuya exposent souvent un `power_outage_memory`).
+
+### Pilotage par la prise seule
+
+Un appareil qui ne se connecte plus au réseau n'a plus d'entité à piloter. S'il est réglé **en marche forcée sur son propre panneau**, il redémarre de lui-même dès qu'il retrouve le courant : une prise commandée suffit alors à le réguler.
+
+Cochez **Pilotage par la prise seule**. L'entité déshumidificateur devient inutile et le formulaire la refuse, comme il refuse l'entité ventilateur : ces deux-là appartiennent à un appareil injoignable. Deux champs deviennent en revanche obligatoires, la **prise d'alimentation**, seul actionneur, et la **puissance de la prise**, seul retour d'état.
+
+Ce qui change dans le fonctionnement :
+
+- l'hygrostat allume et éteint la prise au lieu d'appeler `humidifier.turn_on` / `turn_off` ;
+- l'état `on`/`off` de l'entité suit la prise, et une bascule manuelle de celle-ci est traitée comme une marche ou un arrêt manuels, avec le blocage de 2 h habituel ;
+- l'humidité vient du seul capteur principal, l'appareil n'ayant plus de capteur interne à moyenner ;
+- le redémarrage par coupure de courant est désactivé : couper la prise pour réparer la prise n'aurait aucun sens, elle est l'actionneur.
+
+#### Détecter un appareil sous tension et inerte
+
+Sans entité, l'appareil ne peut plus signaler un réservoir plein. La puissance le dit à sa place : **la prise est allumée, l'hygrostat le croit en marche, et la consommation reste sous le seuil**. Un déshumidificateur tire quelques watts en veille et plusieurs centaines en marche, le seuil de 10 W sépare donc les deux sans ambiguïté.
+
+Le **délai d'inertie** sert deux fois, et c'est voulu : il accorde à l'appareil le temps de démarrer après une mise sous tension, et il exige que la consommation basse dure avant de conclure. Un dégivrage passager ne déclenche donc rien.
+
+Une fois l'inertie constatée, **la prise reste délibérément allumée**. L'appareil étant en marche forcée, il repart tout seul dès que le réservoir est vidé, et la remontée de puissance lève l'alerte sans intervention. La régulation, elle, cesse de cycler la prise tant que dure l'inertie : rallumer un appareil qui ne fait rien ne donnerait rien et userait le compresseur.
+
+Attributs exposés : `device_stalled`, `power_draw` et `plug_only`. L'icône passe à `mdi:cup-water`. Une alerte se construit sur `device_stalled` :
+
+```yaml
+trigger:
+  - platform: state
+    entity_id: humidifier.dh_cave_nw
+    attribute: device_stalled
+    to: true
+    for: "00:02:00"
+```
+
+Causes possibles par ordre de fréquence : réservoir plein, appareil arrêté à son bouton, sécurité thermique déclenchée.
 
 ### Conditions bloquantes : temporisation à la levée
 

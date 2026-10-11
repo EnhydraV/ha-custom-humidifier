@@ -23,6 +23,9 @@
           "power_sensor": "Outlet power (optional: no power cycle if the device draws nothing)",
           "probe_host": "Device IP address (optional: reachability probe before cutting power)",
           "probe_port": "Probe port (6668 for a Tuya module)",
+          "plug_only": "Plug-only control (off-network device, left in forced mode)",
+          "stall_watts": "Stall threshold (W): below this draw the device is doing nothing",
+          "stall_delay": "Stall delay (s): start-up time allowed, and how long low draw must last",
           "fan_entity": "Device fan (optional, to drive the speed)",
           "fan_speed_template": "Fan speed (template returning a %, default 50)",
           "target_template": "Setpoint (template, e.g. {{ 55 }} or {{ states('sensor.setpoint')|float }})"
@@ -35,7 +38,11 @@
       "self_reference": "This is the hygrostat's own entity: point to the appliance, not to its regulator.",
       "fan_entity_required": "A fan speed template requires selecting the fan entity.",
       "target_required": "The setpoint is required: a template, for instance {{ 55 }}.",
-      "power_switch_required": "This setting only decides a power cycle: set the power outlet first"
+      "power_switch_required": "This setting only decides a power cycle: set the power outlet first",
+      "power_switch_required_plug_only": "Plug-only control has nothing to command without a power outlet",
+      "power_sensor_required_plug_only": "Without a power reading there is no way to tell whether the device runs",
+      "unexpected_in_plug_only": "This entity belongs to an off-network device: leave the field empty",
+      "device_entity_required": "Set the dehumidifier entity, or tick plug-only control"
     },
     "abort": {
       "already_configured": "A hygrostat with this name already exists."
@@ -63,6 +70,9 @@
           "power_sensor": "Outlet power (optional: no power cycle if the device draws nothing)",
           "probe_host": "Device IP address (optional: reachability probe before cutting power)",
           "probe_port": "Probe port (6668 for a Tuya module)",
+          "plug_only": "Plug-only control (off-network device, left in forced mode)",
+          "stall_watts": "Stall threshold (W): below this draw the device is doing nothing",
+          "stall_delay": "Stall delay (s): start-up time allowed, and how long low draw must last",
           "fan_entity": "Device fan (optional, to drive the speed)",
           "fan_speed_template": "Fan speed (template returning a %, default 50)",
           "target_template": "Setpoint (template, e.g. {{ 55 }} or {{ states('sensor.setpoint')|float }})"
@@ -76,7 +86,11 @@
       "self_reference": "This is the hygrostat's own entity: point to the appliance, not to its regulator.",
       "fan_entity_required": "A fan speed template requires selecting the fan entity.",
       "target_required": "The setpoint is required: a template, for instance {{ 55 }}.",
-      "power_switch_required": "This setting only decides a power cycle: set the power outlet first"
+      "power_switch_required": "This setting only decides a power cycle: set the power outlet first",
+      "power_switch_required_plug_only": "Plug-only control has nothing to command without a power outlet",
+      "power_sensor_required_plug_only": "Without a power reading there is no way to tell whether the device runs",
+      "unexpected_in_plug_only": "This entity belongs to an off-network device: leave the field empty",
+      "device_entity_required": "Set the dehumidifier entity, or tick plug-only control"
     }
   }
 }

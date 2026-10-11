@@ -35,6 +35,9 @@ from .const import (
     CONF_STARTUP_DELAY,
     CONF_POWER_SWITCH,
     CONF_POWER_SENSOR,
+    CONF_PLUG_ONLY,
+    CONF_STALL_WATTS,
+    CONF_STALL_DELAY,
     CONF_PROBE_HOST,
     CONF_PROBE_PORT,
     DEFAULT_NAME,
@@ -46,6 +49,8 @@ from .const import (
     DEFAULT_MIN_CYCLE_MINUTES,
     DEFAULT_STARTUP_DELAY_SECONDS,
     DEFAULT_PROBE_PORT,
+    DEFAULT_STALL_WATTS,
+    DEFAULT_STALL_DELAY_SECONDS,
 )
 
 CONF_NAME = "name"
@@ -162,6 +167,30 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                 )
             ),
             vol.Optional(
+                CONF_PLUG_ONLY,
+                default=defaults.get(CONF_PLUG_ONLY, False),
+            ): selector.BooleanSelector(),
+            vol.Optional(
+                CONF_STALL_WATTS,
+                default=defaults.get(CONF_STALL_WATTS, DEFAULT_STALL_WATTS),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=1000, step=1, unit_of_measurement="W",
+                    mode=selector.NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Optional(
+                CONF_STALL_DELAY,
+                default=defaults.get(
+                    CONF_STALL_DELAY, DEFAULT_STALL_DELAY_SECONDS
+                ),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=30, max=1800, step=10, unit_of_measurement="s",
+                    mode=selector.NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Optional(
                 CONF_PROBE_HOST,
                 description={"suggested_value": defaults.get(CONF_PROBE_HOST)},
             ): selector.TextSelector(),
@@ -254,6 +283,18 @@ def _validate(
         if (target := user_input.get(conf)) and target in own_ids:
             # Se désigner soi-même comme appareil piloté reboucle sur soi
             errors[conf] = "self_reference"
+    if user_input.get(CONF_PLUG_ONLY):
+        # La prise est le seul actionneur et la puissance le seul retour
+        if not user_input.get(CONF_POWER_SWITCH):
+            errors[CONF_POWER_SWITCH] = "power_switch_required_plug_only"
+        if not user_input.get(CONF_POWER_SENSOR):
+            errors[CONF_POWER_SENSOR] = "power_sensor_required_plug_only"
+        # Ces deux entites appartiennent a un appareil hors reseau
+        for conf in (CONF_DEVICE_ENTITY, CONF_FAN_ENTITY):
+            if user_input.get(conf):
+                errors[conf] = "unexpected_in_plug_only"
+    elif not user_input.get(CONF_DEVICE_ENTITY):
+        errors[CONF_DEVICE_ENTITY] = "device_entity_required"
     for conf in (CONF_POWER_SENSOR, CONF_PROBE_HOST):
         # Ces deux-la ne servent qu'a decider d'une coupure de courant
         if user_input.get(conf) and not user_input.get(CONF_POWER_SWITCH):

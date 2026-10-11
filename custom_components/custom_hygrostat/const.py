@@ -48,6 +48,16 @@ CONF_POWER_SENSOR = "power_sensor"
 CONF_PROBE_HOST = "probe_host"
 CONF_PROBE_PORT = "probe_port"
 
+# Pilotage par la prise SEULE, pour un appareil qui ne se connecte plus au
+# reseau. La prise devient l'unique actionneur et le capteur de puissance
+# l'unique retour : l'appareil, laisse en marche forcee sur son panneau,
+# redemarre de lui-meme des qu'il est remis sous tension.
+CONF_PLUG_ONLY = "plug_only"
+# Seuil et duree qui qualifient un appareil sous tension qui ne fait rien
+# (reservoir plein, securite declenchee, arret au bouton)
+CONF_STALL_WATTS = "stall_watts"
+CONF_STALL_DELAY = "stall_delay"
+
 DEFAULT_NAME = "Custom Hygrostat"
 DEFAULT_TOLERANCE = 3
 DEFAULT_MIN_HUMIDITY = 30
@@ -59,6 +69,12 @@ DEFAULT_MIN_CYCLE_MINUTES = 0
 DEFAULT_STARTUP_DELAY_SECONDS = 120
 # Port local des modules Tuya
 DEFAULT_PROBE_PORT = 6668
+# Un deshumidificateur en veille tire quelques watts, en marche plusieurs
+# centaines : le seuil separe les deux sans ambiguite
+DEFAULT_STALL_WATTS = 10.0
+# Sert deux fois : delai laisse a l'appareil pour demarrer apres la mise sous
+# tension, et duree de consommation basse exigee avant de conclure
+DEFAULT_STALL_DELAY_SECONDS = 180
 
 # Blocage de la régulation après une extinction manuelle de l'appareil
 MANUAL_OFF_HOLD = timedelta(hours=2)

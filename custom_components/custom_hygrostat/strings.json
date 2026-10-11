@@ -23,6 +23,9 @@
           "power_sensor": "Puissance de la prise (optionnel : aucune coupure si l'appareil ne consomme rien)",
           "probe_host": "Adresse IP de l'appareil (optionnel : sonde de joignabilité avant coupure)",
           "probe_port": "Port de la sonde (6668 pour un module Tuya)",
+          "plug_only": "Pilotage par la prise seule (appareil hors réseau, réglé en marche forcée)",
+          "stall_watts": "Seuil d'inertie (W) : sous cette puissance, l'appareil ne fait rien",
+          "stall_delay": "Délai d'inertie (s) : temps de démarrage accordé, et durée de puissance basse exigée",
           "fan_entity": "Ventilateur de l'appareil (optionnel, pour piloter la puissance)",
           "fan_speed_template": "Puissance de ventilation (template rendant un %, défaut 50)",
           "target_template": "Consigne (template, ex. {{ 55 }} ou {{ states('sensor.consigne')|float }})"
@@ -35,7 +38,11 @@
       "self_reference": "Cette entité est celle de l'hygrostat lui-même : désignez l'appareil, pas son régulateur.",
       "fan_entity_required": "Un template de puissance de ventilation exige de désigner le ventilateur.",
       "target_required": "La consigne est obligatoire : un template, par exemple {{ 55 }}.",
-      "power_switch_required": "Ce réglage ne sert qu'à décider d'une coupure : renseignez d'abord la prise d'alimentation"
+      "power_switch_required": "Ce réglage ne sert qu'à décider d'une coupure : renseignez d'abord la prise d'alimentation",
+      "power_switch_required_plug_only": "Sans prise d'alimentation, le pilotage par la prise n'a rien à commander",
+      "power_sensor_required_plug_only": "Sans mesure de puissance, aucun moyen de savoir si l'appareil tourne",
+      "unexpected_in_plug_only": "Cette entité appartient à un appareil hors réseau : laissez le champ vide",
+      "device_entity_required": "Renseignez l'entité déshumidificateur, ou cochez le pilotage par la prise seule"
     },
     "abort": {
       "already_configured": "Un hygrostat porte déjà ce nom."
@@ -63,6 +70,9 @@
           "power_sensor": "Puissance de la prise (optionnel : aucune coupure si l'appareil ne consomme rien)",
           "probe_host": "Adresse IP de l'appareil (optionnel : sonde de joignabilité avant coupure)",
           "probe_port": "Port de la sonde (6668 pour un module Tuya)",
+          "plug_only": "Pilotage par la prise seule (appareil hors réseau, réglé en marche forcée)",
+          "stall_watts": "Seuil d'inertie (W) : sous cette puissance, l'appareil ne fait rien",
+          "stall_delay": "Délai d'inertie (s) : temps de démarrage accordé, et durée de puissance basse exigée",
           "fan_entity": "Ventilateur de l'appareil (optionnel, pour piloter la puissance)",
           "fan_speed_template": "Puissance de ventilation (template rendant un %, défaut 50)",
           "target_template": "Consigne (template, ex. {{ 55 }} ou {{ states('sensor.consigne')|float }})"
@@ -76,7 +86,11 @@
       "self_reference": "Cette entité est celle de l'hygrostat lui-même : désignez l'appareil, pas son régulateur.",
       "fan_entity_required": "Un template de puissance de ventilation exige de désigner le ventilateur.",
       "target_required": "La consigne est obligatoire : un template, par exemple {{ 55 }}.",
-      "power_switch_required": "Ce réglage ne sert qu'à décider d'une coupure : renseignez d'abord la prise d'alimentation"
+      "power_switch_required": "Ce réglage ne sert qu'à décider d'une coupure : renseignez d'abord la prise d'alimentation",
+      "power_switch_required_plug_only": "Sans prise d'alimentation, le pilotage par la prise n'a rien à commander",
+      "power_sensor_required_plug_only": "Sans mesure de puissance, aucun moyen de savoir si l'appareil tourne",
+      "unexpected_in_plug_only": "Cette entité appartient à un appareil hors réseau : laissez le champ vide",
+      "device_entity_required": "Renseignez l'entité déshumidificateur, ou cochez le pilotage par la prise seule"
     }
   }
 }

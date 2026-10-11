@@ -9,6 +9,8 @@ from homeassistant.core import HomeAssistant
 
 from .const import (
     CONF_DEVICE_ENTITY,
+    CONF_PLUG_ONLY,
+    CONF_POWER_SWITCH,
     CONF_TARGET_TEMPLATE,
     DEFAULT_TARGET_HUMIDITY,
     PLATFORMS,
@@ -30,7 +32,17 @@ SINGLE_EXPRESSION = re.compile(r"^\s*\{\{(?P<body>[^{}]+)\}\}\s*$")
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Custom Hygrostat from a config entry."""
-    if not {**entry.data, **entry.options}.get(CONF_DEVICE_ENTITY):
+    cfg = {**entry.data, **entry.options}
+    if cfg.get(CONF_PLUG_ONLY):
+        # Appareil hors réseau : la prise est le seul actionneur
+        if not cfg.get(CONF_POWER_SWITCH):
+            _LOGGER.error(
+                "%s : pilotage par la prise sans prise d'alimentation, "
+                "reconfigurez l'entrée",
+                entry.title,
+            )
+            return False
+    elif not cfg.get(CONF_DEVICE_ENTITY):
         # Entrée créée quand l'appareil se pilotait par séquences d'actions :
         # sans entité, il n'y a plus rien à piloter
         _LOGGER.error(
@@ -121,7 +133,7 @@ def _migrate_v2_to_v3(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             cfg.pop(key, None)
 
     hass.config_entries.async_update_entry(entry, data=data, options=options, version=3)
-    if not {**data, **options}.get(CONF_DEVICE_ENTITY):
+    if not {**data, **options}.get(CONF_DEVICE_ENTITY):  # noqa: SIM102
         # Les séquences supprimées ne peuvent pas être converties en entité :
         # elles pouvaient piloter n'importe quoi, y compris sans entité du tout
         _LOGGER.warning(
