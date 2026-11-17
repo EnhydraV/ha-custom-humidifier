@@ -14,6 +14,7 @@ from homeassistant.components.humidifier import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     EVENT_HOMEASSISTANT_START,
+    EVENT_HOMEASSISTANT_STOP,
     STATE_UNAVAILABLE,
     STATE_UNKNOWN,
 )
@@ -296,6 +297,14 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
                 )
             )
         self.async_on_remove(self._cancel_stall_timer)
+
+        # Dernier moment ou l'on peut encore parler a l'appareil avant de
+        # cesser de le piloter : c'est la que se fait la mise au repos
+        self.async_on_remove(
+            self.hass.bus.async_listen_once(
+                EVENT_HOMEASSISTANT_STOP, self._async_hass_stopping
+            )
+        )
 
         track_templates = [
             TrackTemplate(tpl, None)
@@ -1407,6 +1416,55 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             context=self._context or Context(),
         )
 
+    @staticmethod
+    def _deja_a(courant, cible):
+        """Vrai si l'appareil annonce deja la valeur visee."""
+        try:
+            return abs(float(courant) - float(cible)) < 0.5
+        except (TypeError, ValueError):
+            return False
+
+    async def _async_leave_device_idle(self):
+        """Laisse l'appareil inoffensif avant qu'on cesse de le piloter.
+
+        Appelee a l'arret de Home Assistant, le seul instant ou l'on SAIT
+        qu'on ne commandera plus rien tout en pouvant encore ecrire. Elle
+        n'est PAS accrochee au retrait de l'entite : un rechargement des
+        options en passe aussi par la, et l'instance suivante, se croyant
+        deja active, ne relancerait pas l'appareil mis au repos. Si
+        l'appareil redemarre ensuite tout seul, il repart en mode de repos
+        avec une consigne inatteignable, donc sans se mettre a tourner.
+
+        Chaque ecriture est conditionnelle : l'appareil garde ces valeurs
+        d'une fois sur l'autre, les renvoyer a l'identique ne ferait que le
+        faire biper pour rien.
+        """
+        if self._plug_only or not self._device_entity_id:
+            # Appareil pilote par sa seule prise : rien a lui ecrire
+            return
+        state = self.hass.states.get(self._device_entity_id)
+        if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return
+        modes = state.attributes.get("available_modes") or []
+        idle_mode = next((m for m in DEVICE_IDLE_MODES if m in modes), None)
+        max_h = state.attributes.get("max_humidity")
+        try:
+            # CONSIGNE D'ABORD : passer en mode de repos alors que la consigne
+            # est encore basse remettrait l'appareil en marche entre les deux
+            if max_h is not None and not self._deja_a(
+                state.attributes.get("humidity"), max_h
+            ):
+                await self._async_call_device("set_humidity", {"humidity": max_h})
+            if idle_mode and state.attributes.get("mode") != idle_mode:
+                await self._async_call_device("set_mode", {"mode": idle_mode})
+        except Exception:  # noqa: BLE001 - l'appareil peut refuser ou disparaitre
+            _LOGGER.warning(
+                "Mise au repos de %s impossible", self._device_entity_id
+            )
+
+    async def _async_hass_stopping(self, _event):
+        await self._async_leave_device_idle()
+
     async def _async_drive_device(self, turn_on):
         """Pilote l'appareil ; renvoie False si la séquence a échoué.
 
@@ -1440,9 +1498,7 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
             return False
         modes = state.attributes.get("available_modes") or []
         run_mode = DEVICE_RUN_MODE if DEVICE_RUN_MODE in modes else None
-        idle_mode = next((m for m in DEVICE_IDLE_MODES if m in modes), None)
         min_h = state.attributes.get("min_humidity")
-        max_h = state.attributes.get("max_humidity")
 
         try:
             if turn_on:
@@ -1456,13 +1512,10 @@ class CustomHygrostat(HumidifierEntity, RestoreEntity):
                     # consigne atteignable, sinon il ne ferait rien
                     await self._async_call_device("set_humidity", {"humidity": min_h})
             else:
-                # Écritures AVANT la coupure : beaucoup d'appareils ignorent
-                # les commandes une fois éteints. L'appareil est ainsi laissé
-                # inoffensif s'il venait à redémarrer sans nous.
-                if idle_mode:
-                    await self._async_call_device("set_mode", {"mode": idle_mode})
-                if max_h is not None:
-                    await self._async_call_device("set_humidity", {"humidity": max_h})
+                # La mise au repos est passée dans _async_leave_device_idle.
+                # La faire ici coûtait deux commandes de plus à CHAQUE
+                # extinction, donc deux bips, pour couvrir un redémarrage
+                # hors de notre contrôle qui ne survient presque jamais.
                 await self._async_call_device("turn_off", {})
         except Exception:  # noqa: BLE001 - l'appareil peut refuser ou disparaître
             _LOGGER.exception(

@@ -1012,3 +1012,60 @@ Non couvert par les bancs d'essai : la logique vit dans `async_added_to_hass`,
 methode asynchrone qui depend de `async_get_last_state` et du suivi de
 templates, trop couteuse a doubler pour ce que ca rapporterait. Verifie par
 lecture et par la reproduction en production decrite ci-dessus.
+
+## v0.4.4 - La mise au repos quitte le cycle courant
+
+SYMPTOME RAPPORTE : trois bips de l'appareil a chaque extinction.
+
+Mesure sur l'installation, sequence reellement envoyee a un DryFy
+(`available_modes: ['auto','boost']`) :
+
+    extinction   humidifier.set_mode      -> auto    (DEVICE_IDLE_MODES)
+                 humidifier.set_humidity  -> 80      (max_humidity)
+                 humidifier.turn_off
+    allumage     humidifier.turn_on
+                 humidifier.set_mode      -> boost   (DEVICE_RUN_MODE)
+
+Trois commandes a l'extinction, trois bips. Les deux premieres ne servent PAS
+au prochain allumage, qui renvoie `boost` de toute facon : c'etait un garde-fou
+pour le cas ou l'appareil redemarrerait hors de notre controle.
+
+CE QUI A ETE MESURE AVANT DE TRANCHER : sur trois jours d'historique, la
+consigne de `humidifier.dryfy_sdb` valait 80 sur la TOTALITE des 787 releves.
+Le `set_humidity(80)` de chaque extinction reecrivait donc une valeur deja en
+place, a chaque cycle, pour rien.
+
+PISTE ECARTEE : deplacer ces ecritures dans `_async_power_cycle`. Elle ne tient
+pas, l'appareil y est MUET par definition, c'est la raison meme de la coupure.
+Lui ecrire un mode a ce moment-la n'aboutirait nulle part.
+
+CORRECTIF : les deux ecritures passent dans `_async_leave_device_idle()`,
+accrochee a `EVENT_HOMEASSISTANT_STOP`. L'extinction courante se reduit a
+`turn_off`, donc un bip au lieu de trois. Deux details qui comptent :
+
+- CONSIGNE AVANT MODE, l'inverse de l'ordre d'origine. Passer en mode de repos
+  alors que la consigne est encore basse remet l'appareil en marche entre les
+  deux commandes. L'ordre d'origine s'en tirait parce qu'un `turn_off` suivait
+  aussitot ; ici rien ne suit.
+- ECRITURES CONDITIONNELLES, sautees quand l'appareil annonce deja la valeur
+  visee. Sans ce test, l'arret de HA biperait sans raison.
+
+PAS ACCROCHE A `async_will_remove_from_hass`, ce qui etait pourtant tentant :
+un rechargement d'options passe aussi par la. L'appareil serait mis au repos,
+puis l'instance suivante, restaurant `_active = True`, sortirait immediatement
+de `_async_device_turn_on` (`if self._active: return`) et ne le relancerait
+jamais. Le deshumidificateur resterait allume sans deshumidifier.
+
+COUVERTURE GAGNEE AU PASSAGE : l'ancien code ne mettait l'appareil au repos que
+lorsque l'hygrostat l'eteignait lui-meme. Un arret de HA pendant une marche
+laissait l'appareil en `boost`. C'est desormais couvert.
+
+RISQUE RESIDUEL ASSUME : une coupure de courant brutale ou un plantage ne
+laissent pas le temps d'ecrire. L'appareil peut alors repartir en `boost`.
+L'ancien code n'y pouvait rien non plus des lors que l'appareil tournait, donc
+aucune regression. Si cela se produit, `_async_handle_manual_switch` voit la
+marche non commandee et l'arrete.
+
+NON COUVERT PAR LES BANCS D'ESSAI : `essai_humidite.py` et `essai_inertie.py`
+simulent la regulation, pas les appels de service. Verifie par lecture du diff
+et par la mesure d'historique ci-dessus.
